@@ -1,0 +1,5 @@
+{
+  "id": "stats-summary",
+  "description": "Fix summary statistics to handle edge cases and correct variance.",
+  "category": "debugging"
+}

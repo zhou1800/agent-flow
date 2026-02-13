@@ -1,0 +1,5 @@
+{
+  "id": "threadsafe-counter",
+  "description": "Make Counter thread-safe under concurrent increments.",
+  "category": "concurrency"
+}

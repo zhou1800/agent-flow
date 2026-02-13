@@ -1,0 +1,140 @@
+"""Workspace cloning, diffing, and merging utilities for self-improvement sessions."""
+
+from __future__ import annotations
+
+import hashlib
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class WorkspaceChange:
+    relpath: str
+    kind: str  # "add" | "modify" | "delete"
+
+
+def clone_master(master_root: Path, workspace_root: Path, include_paths: list[str]) -> None:
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    for rel in include_paths:
+        src = master_root / rel
+        dst = workspace_root / rel
+        if not src.exists():
+            continue
+        if src.is_dir():
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst, ignore=_ignore_cache_dirs)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+
+def compute_changes(master_root: Path, workspace_root: Path, include_paths: list[str]) -> list[WorkspaceChange]:
+    master_files = _collect_files(master_root, include_paths)
+    workspace_files = _collect_files(workspace_root, include_paths)
+    all_paths = sorted(set(master_files) | set(workspace_files))
+    changes: list[WorkspaceChange] = []
+    for relpath in all_paths:
+        master_path = master_root / relpath
+        session_path = workspace_root / relpath
+        if master_path.exists() and not session_path.exists():
+            changes.append(WorkspaceChange(relpath=relpath, kind="delete"))
+            continue
+        if session_path.exists() and not master_path.exists():
+            changes.append(WorkspaceChange(relpath=relpath, kind="add"))
+            continue
+        if session_path.exists() and master_path.exists():
+            if _file_digest(master_path) != _file_digest(session_path):
+                changes.append(WorkspaceChange(relpath=relpath, kind="modify"))
+    return changes
+
+
+def merge_winner(master_root: Path, workspace_root: Path, include_paths: list[str],
+                 changes: list[WorkspaceChange]) -> dict[str, bytes | None]:
+    """Apply the winner workspace to master. Returns a backup map for rollback."""
+    backups: dict[str, bytes | None] = {}
+    for change in changes:
+        target = master_root / change.relpath
+        if target.exists():
+            backups[change.relpath] = target.read_bytes()
+        else:
+            backups[change.relpath] = None
+
+    for change in changes:
+        src = workspace_root / change.relpath
+        dst = master_root / change.relpath
+        if change.kind == "delete":
+            if dst.exists():
+                dst.unlink()
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    return backups
+
+
+def rollback_merge(master_root: Path, backups: dict[str, bytes | None]) -> None:
+    for relpath, content in backups.items():
+        dst = master_root / relpath
+        if content is None:
+            if dst.exists():
+                dst.unlink()
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(content)
+
+
+def _collect_files(root: Path, include_paths: list[str]) -> set[str]:
+    files: set[str] = set()
+    for rel in include_paths:
+        base = root / rel
+        if not base.exists():
+            continue
+        if base.is_file():
+            files.add(rel)
+            continue
+        for path in base.rglob("*"):
+            if path.is_file() and not _is_ignored(path):
+                files.add(str(path.relative_to(root)))
+    return files
+
+
+def _is_ignored(path: Path) -> bool:
+    parts = set(path.parts)
+    if "__pycache__" in parts:
+        return True
+    if ".pytest_cache" in parts:
+        return True
+    if "runs" in parts:
+        return True
+    if "build" in parts or "dist" in parts:
+        return True
+    if any(part.endswith(".egg-info") for part in parts):
+        return True
+    if path.suffix in {".pyc", ".pyo"}:
+        return True
+    return False
+
+
+def _ignore_cache_dirs(directory: str, names: list[str]) -> set[str]:
+    ignored: set[str] = set()
+    for name in names:
+        if name in {"__pycache__", ".pytest_cache", "runs", "build", "dist"}:
+            ignored.add(name)
+        if name.endswith((".pyc", ".pyo")):
+            ignored.add(name)
+        if name.endswith(".egg-info"):
+            ignored.add(name)
+    return ignored
+
+
+def _file_digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()

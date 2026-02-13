@@ -1,0 +1,5 @@
+{
+  "id": "interval-merge",
+  "description": "Fix interval merging to handle unsorted intervals and edge overlaps.",
+  "category": "algorithm"
+}

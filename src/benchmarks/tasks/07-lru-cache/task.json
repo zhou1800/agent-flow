@@ -1,0 +1,5 @@
+{
+  "id": "lru-cache",
+  "description": "Fix LRU eviction order and access updates.",
+  "category": "stateful"
+}

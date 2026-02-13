@@ -1,0 +1,5 @@
+{
+  "id": "http-client-refactor",
+  "description": "Refactor the client API to request(endpoint, data, timeout=5) and update call sites.",
+  "category": "refactor"
+}

@@ -1,0 +1,198 @@
+"""Worker agent implementation."""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from agents.outputs import WorkerOutput
+from flow_types import ToolCallRecord, WorkerStatus
+from llm.client import LLMClient
+from tools.base import ToolResult
+
+
+class Worker:
+    def __init__(self, role: str, llm_client: LLMClient, tools: dict[str, Any]) -> None:
+        self.role = role
+        self.llm_client = llm_client
+        self.tools = tools
+
+    def run(self, goal: str, step_id: str, inputs: dict[str, Any], memory: list[str],
+            max_iterations: int = 20) -> WorkerOutput:
+        start = time.perf_counter()
+        model_calls = 0
+        tool_call_records: list[ToolCallRecord] = []
+        messages = [
+            {"role": "system", "content": f"You are a {self.role} worker."},
+            {"role": "user", "content": f"Goal: {goal}\nStep: {step_id}\nInputs: {inputs}\nMemory: {memory}"},
+        ]
+        for iteration in range(1, max_iterations + 1):
+            response = self.llm_client.send(messages, tools=_tool_descriptors(self.tools))
+            model_calls += 1
+
+            try:
+                tool_calls = _parse_tool_calls(response)
+            except Exception as exc:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                return WorkerOutput(
+                    status=WorkerStatus.FAILURE,
+                    summary=f"invalid tool_calls: {exc}",
+                    artifacts=[],
+                    metrics={
+                        "elapsed_ms": elapsed_ms,
+                        "model_calls": model_calls,
+                        "tool_calls": len(tool_call_records),
+                        "iteration_count": iteration,
+                        "tool_call_records": [record.__dict__ for record in tool_call_records],
+                    },
+                    next_actions=["Fix tool_calls schema or return a final response."],
+                    failure_signature="worker-invalid-tool-calls",
+                )
+            if tool_calls:
+                for call in tool_calls:
+                    record = _invoke_tool_call(self.tools, call)
+                    tool_call_records.append(record)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "name": record.tool_name,
+                            "content": json.dumps(
+                                {"ok": record.ok, "summary": record.summary, "data": record.data, "error": record.error},
+                                sort_keys=True,
+                            ),
+                        }
+                    )
+                continue
+
+            output = _coerce_output(response)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            output.metrics = dict(output.metrics)
+            output.metrics.setdefault("elapsed_ms", elapsed_ms)
+            output.metrics.setdefault("model_calls", model_calls)
+            output.metrics.setdefault("tool_calls", len(tool_call_records))
+            output.metrics.setdefault("iteration_count", iteration)
+            output.metrics.setdefault("tool_call_records", [record.__dict__ for record in tool_call_records])
+            return output
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        return WorkerOutput(
+            status=WorkerStatus.FAILURE,
+            summary=f"worker exceeded max_iterations={max_iterations}",
+            artifacts=[],
+            metrics={
+                "elapsed_ms": elapsed_ms,
+                "model_calls": model_calls,
+                "tool_calls": len(tool_call_records),
+                "iteration_count": max_iterations,
+                "tool_call_records": [record.__dict__ for record in tool_call_records],
+            },
+            next_actions=["Reduce tool calls, change strategy, or adjust planning."],
+            failure_signature="worker-max-iterations",
+        )
+
+
+def _coerce_output(data: dict[str, Any]) -> WorkerOutput:
+    raw_status = data.get("status", "PARTIAL")
+    try:
+        status = WorkerStatus(raw_status)
+    except ValueError:
+        status = WorkerStatus.PARTIAL
+    known_keys = {"status", "summary", "artifacts", "metrics", "next_actions", "failure_signature", "tool_calls"}
+    extra = {key: value for key, value in data.items() if key not in known_keys}
+    return WorkerOutput(
+        status=status,
+        summary=data.get("summary", ""),
+        artifacts=data.get("artifacts", []),
+        metrics=data.get("metrics", {}),
+        next_actions=data.get("next_actions", []),
+        failure_signature=data.get("failure_signature", ""),
+        data=extra,
+    )
+
+
+def _tool_descriptors(tools: dict[str, Any]) -> list[dict[str, Any]]:
+    descriptors: list[dict[str, Any]] = []
+    for name, tool in tools.items():
+        actions = [
+            attr
+            for attr in dir(tool)
+            if not attr.startswith("_") and callable(getattr(tool, attr, None))
+        ]
+        descriptors.append({"name": name, "actions": sorted(set(actions))})
+    return descriptors
+
+
+def _parse_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
+    if "status" in response:
+        return []
+    tool_calls = response.get("tool_calls")
+    if not tool_calls:
+        return []
+    if not isinstance(tool_calls, list):
+        raise ValueError("tool_calls must be a list")
+    return [call for call in tool_calls if isinstance(call, dict)]
+
+
+def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRecord:
+    start = time.perf_counter()
+    tool_name = str(call.get("tool", ""))
+    action = str(call.get("action", ""))
+    args = call.get("args", {}) or {}
+    if not isinstance(args, dict):
+        args = {}
+
+    tool = tools.get(tool_name)
+    if tool is None:
+        return ToolCallRecord(
+            tool_name=tool_name or "<missing>",
+            ok=False,
+            summary="unknown tool",
+            data={"action": action, "args": args},
+            elapsed_ms=_elapsed_ms(start),
+            error="unknown tool",
+        )
+
+    fn = getattr(tool, action, None)
+    if not callable(fn):
+        return ToolCallRecord(
+            tool_name=tool_name,
+            ok=False,
+            summary="unknown action",
+            data={"action": action, "args": args},
+            elapsed_ms=_elapsed_ms(start),
+            error="unknown action",
+        )
+
+    try:
+        result = fn(**args)
+        if not isinstance(result, ToolResult):
+            return ToolCallRecord(
+                tool_name=tool_name,
+                ok=True,
+                summary="tool returned non-ToolResult",
+                data={"result": result},
+                elapsed_ms=_elapsed_ms(start),
+                error=None,
+            )
+        return ToolCallRecord(
+            tool_name=tool_name,
+            ok=result.ok,
+            summary=result.summary,
+            data=result.data,
+            elapsed_ms=result.elapsed_ms,
+            error=result.error,
+        )
+    except Exception as exc:
+        return ToolCallRecord(
+            tool_name=tool_name,
+            ok=False,
+            summary="tool exception",
+            data={"action": action, "args": args},
+            elapsed_ms=_elapsed_ms(start),
+            error=str(exc),
+        )
+
+
+def _elapsed_ms(start: float) -> float:
+    return (time.perf_counter() - start) * 1000

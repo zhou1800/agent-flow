@@ -1,0 +1,5 @@
+{
+  "id": "config-precedence",
+  "description": "Fix configuration merge precedence: defaults < file < env.",
+  "category": "debugging"
+}

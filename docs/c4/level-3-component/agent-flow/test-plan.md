@@ -1,0 +1,35 @@
+# Agent-Flow Test Plan
+
+This document maps requirements to automated tests.
+
+## Unit Tests
+- Workflow persistence and resume: serialize/deserialize DAG state and resume execution.
+- Planner workflow generation: Planner output is converted into a multi-step workflow when provided.
+- Retry novelty gating: refuse identical retry without a Lesson and changed strategy.
+- Failure signature de-dup: detect repeated failures via hash (task_id, call_signature, failure_signature).
+- Cycle detection: detect delegation cycles and repeated subtrees without new artifacts.
+- Memory staged retrieval: Stage 1/2/3 selection logic with deterministic lexical index.
+- Dynamic skill registration: register only after tests pass; hot reload behavior.
+- Parallel execution correctness: basic ordering, backpressure, and cancellation.
+- Tool schemas: FileTool path traversal protection, PatchTool validation, PytestTool parsing.
+- Worker tool loop: tool calls execute and are reflected in worker metrics (model/tool call counts).
+
+## Integration Tests
+- End-to-end run of at least two benchmark tasks using the mock model:
+  - Validate artifacts, Lessons, and reports are produced.
+  - Verify baseline and hierarchical runners both execute.
+
+- Self-improvement batch:
+  - Creates multiple isolated session workspaces from a master root.
+  - Evaluates each session and selects a winner deterministically.
+  - Merges the winner back to master and re-runs evaluation.
+
+## Benchmark Task Tests
+- Each benchmark task includes pytest acceptance tests.
+- Intermediate scoring signals are asserted by tests (e.g., partial score thresholds).
+
+## Test Commands
+- From repo root: `source .venv/bin/activate && pytest --maxfail=1 -c src/pyproject.toml src/tests`
+
+## Coverage Expectations
+- All key requirements in `docs/c4/level-3-component/agent-flow/requirements.md` have corresponding tests.

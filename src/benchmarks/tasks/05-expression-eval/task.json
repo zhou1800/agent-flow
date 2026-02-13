@@ -1,0 +1,5 @@
+{
+  "id": "expression-eval",
+  "description": "Implement expression evaluator with precedence, parentheses, and error handling.",
+  "category": "parsing"
+}

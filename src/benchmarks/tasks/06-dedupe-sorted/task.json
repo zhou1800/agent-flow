@@ -1,0 +1,5 @@
+{
+  "id": "dedupe-sorted",
+  "description": "Optimize dedupe_sorted to be linear using an ops counter.",
+  "category": "performance"
+}

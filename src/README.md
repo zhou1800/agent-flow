@@ -1,0 +1,14 @@
+# Agent-Flow
+
+Production-grade manager/worker agent system with workflow orchestration, novelty-gated retries, and offline benchmarks.
+
+## Quickstart
+- Run commands from the repository root.
+- Specs:
+  - `../docs/c4/level-2-container/agent-flow.md`
+  - `../docs/c4/level-3-component/agent-flow/requirements.md`
+  - `../docs/c4/level-3-component/agent-flow/test-plan.md`
+- Setup: `python -m venv .venv && source .venv/bin/activate && pip install -e src[dev]`
+- Run a benchmark suite: `source .venv/bin/activate && agent-flow run-suite`
+- Run a single task: `source .venv/bin/activate && agent-flow run-task --task-id stats-summary`
+- Run tests: `source .venv/bin/activate && pytest --maxfail=1 -c src/pyproject.toml src/tests`
