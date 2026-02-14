@@ -7,6 +7,7 @@ import inspect
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -168,6 +169,17 @@ class SelfImproveOrchestrator:
         workflow_error: str | None = None
         model_calls = 0
         tool_calls = 0
+
+        session_report: dict[str, Any] = {
+            "session_id": session_id,
+            "goal": session_goal,
+            "input": {"kind": input_payload.kind, "ref": input_payload.ref},
+            "master_baseline_evaluation": baseline_master_eval.__dict__,
+            "pytest_args": list(self.settings.pytest_args),
+            "status": "RUNNING",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
         try:
             result = runner.run(
                 session_goal,
@@ -189,22 +201,21 @@ class SelfImproveOrchestrator:
         changes = compute_changes(self.master_root, workspace_dir, include_paths=self.settings.include_paths)
         changed_files = [change.relpath for change in changes]
         score = _score(evaluation, workflow_ok, len(changed_files), model_calls, tool_calls)
-        session_report = {
-            "session_id": session_id,
-            "goal": session_goal,
-            "input": {"kind": input_payload.kind, "ref": input_payload.ref},
-            "master_baseline_evaluation": baseline_master_eval.__dict__,
-            "pytest_args": list(self.settings.pytest_args),
-            "run_root": run_root,
-            "workflow_ok": workflow_ok,
-            "workflow_status": workflow_status,
-            "workflow_error": workflow_error,
-            "evaluation": evaluation.__dict__,
-            "model_calls": model_calls,
-            "tool_calls": tool_calls,
-            "changed_files": changed_files,
-            "error": error,
-        }
+        session_report.update(
+            {
+                "status": "COMPLETED",
+                "run_root": run_root,
+                "workflow_ok": workflow_ok,
+                "workflow_status": workflow_status,
+                "workflow_error": workflow_error,
+                "evaluation": evaluation.__dict__,
+                "model_calls": model_calls,
+                "tool_calls": tool_calls,
+                "changed_files": changed_files,
+                "error": error,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
         (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
         return SelfImproveSessionResult(
             session_id=session_id,
