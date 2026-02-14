@@ -108,7 +108,16 @@ class CodexCLIClient:
         # Note: Codex CLI supports `--output-schema`, but its accepted JSON Schema subset
         # is stricter than standard Draft-07. For portability, we capture the last agent
         # message and parse JSON ourselves (mirrors the ai-agent-cli approach).
-        with tempfile.TemporaryDirectory(prefix="agent-flow-codex-") as tmpdir:
+        tmp_root = _ensure_tmp_root(self.workspace_dir)
+        env = os.environ.copy()
+        if tmp_root is not None:
+            env.update({"TMPDIR": str(tmp_root), "TEMP": str(tmp_root), "TMP": str(tmp_root)})
+
+        tmp_kwargs: dict[str, Any] = {"prefix": "agent-flow-codex-"}
+        if tmp_root is not None:
+            tmp_kwargs["dir"] = str(tmp_root)
+
+        with tempfile.TemporaryDirectory(**tmp_kwargs) as tmpdir:
             tmp = Path(tmpdir)
             last_message_path = tmp / "last_message.txt"
 
@@ -119,6 +128,7 @@ class CodexCLIClient:
                     input=prompt,
                     text=True,
                     capture_output=True,
+                    env=env,
                     cwd=str(self.workspace_dir),
                     timeout=self.settings.timeout_s,
                     check=False,
@@ -226,11 +236,18 @@ def _build_codex_exec_command(
 def _render_prompt(messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None) -> str:
     tool_lines: list[str] = []
     if tools:
-        tool_lines.append("Available tools (request via tool_calls JSON):")
+        tool_lines.append("Available tools (request via tool_calls JSON; args keys must match parameter names):")
         for tool in tools:
             name = str(tool.get("name", ""))
             actions = tool.get("actions", [])
+            signatures = tool.get("signatures")
             if not name:
+                continue
+            if isinstance(signatures, dict) and isinstance(actions, list) and actions:
+                tool_lines.append(f"- {name}:")
+                for action in sorted(str(a) for a in actions):
+                    rendered = signatures.get(action) if isinstance(signatures.get(action), str) else None
+                    tool_lines.append(f"  - {rendered or action}")
                 continue
             if isinstance(actions, list):
                 actions_text = ", ".join(str(action) for action in actions)
@@ -244,6 +261,7 @@ def _render_prompt(messages: list[dict[str, Any]], *, tools: list[dict[str, Any]
         "Output contract:",
         "- Reply with exactly one JSON object and nothing else (no markdown).",
         "- If you need to call tools, reply with: {\"tool_calls\": [{\"tool\": \"...\", \"action\": \"...\", \"args\": {...}}]}",
+        "- Tool call args must be a JSON object with keys matching the action parameter names.",
         "- Otherwise, reply with a final object that includes at least: {\"status\": \"SUCCESS|FAILURE|BLOCKED|PARTIAL\", \"summary\": \"...\"}",
         "",
     ]
@@ -310,6 +328,15 @@ def _first_nonempty_line(text: str) -> str:
         if stripped:
             return stripped
     return ""
+
+
+def _ensure_tmp_root(workspace_dir: Path) -> Path | None:
+    try:
+        tmp_root = (workspace_dir / ".agent-flow-tmp").resolve()
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        return tmp_root
+    except Exception:
+        return None
 
 
 def _load_json_env(var_name: str) -> dict[str, Any] | None:

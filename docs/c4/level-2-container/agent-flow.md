@@ -183,6 +183,7 @@ Transitions:
 - A self-improvement “run” executes one or more **batches**.
 - Each batch spawns N **sessions** in parallel (threads/processes), each with an isolated workspace clone of master.
 - For safety, cloning and merging may be restricted to a configured set of paths (defaults should include `src/` and `docs/`).
+- Session workspaces should include the repo entrypoint `AGENTS.md` so agents can follow the documented start sequence.
 - Each session:
   - Receives the self-improvement goal plus optional input sources (URL/file/text).
   - Runs the hierarchical runner inside its workspace.

@@ -29,7 +29,7 @@ class SelfImproveSettings:
     sessions_per_batch: int = 4
     batches: int = 1
     max_workers: int = 4
-    include_paths: list[str] = field(default_factory=lambda: ["src", "docs"])
+    include_paths: list[str] = field(default_factory=lambda: ["AGENTS.md", "src", "docs"])
     pytest_args: list[str] = field(
         default_factory=lambda: ["--maxfail=1", "-c", "src/pyproject.toml", "src/tests"]
     )

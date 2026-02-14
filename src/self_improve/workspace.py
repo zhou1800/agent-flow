@@ -95,13 +95,17 @@ def _collect_files(root: Path, include_paths: list[str]) -> set[str]:
             files.add(rel)
             continue
         for path in base.rglob("*"):
-            if path.is_file() and not _is_ignored(path):
+            if path.is_file() and not _is_ignored(root, path):
                 files.add(str(path.relative_to(root)))
     return files
 
 
-def _is_ignored(path: Path) -> bool:
-    parts = set(path.parts)
+def _is_ignored(root: Path, path: Path) -> bool:
+    try:
+        relpath = path.relative_to(root)
+    except ValueError:
+        relpath = path
+    parts = set(relpath.parts)
     if "__pycache__" in parts:
         return True
     if ".pytest_cache" in parts:

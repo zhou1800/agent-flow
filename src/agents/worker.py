@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from typing import Any
@@ -57,10 +58,7 @@ class Worker:
                         {
                             "role": "tool",
                             "name": record.tool_name,
-                            "content": json.dumps(
-                                {"ok": record.ok, "summary": record.summary, "data": record.data, "error": record.error},
-                                sort_keys=True,
-                            ),
+                            "content": _format_tool_message(record),
                         }
                     )
                 continue
@@ -114,12 +112,24 @@ def _coerce_output(data: dict[str, Any]) -> WorkerOutput:
 def _tool_descriptors(tools: dict[str, Any]) -> list[dict[str, Any]]:
     descriptors: list[dict[str, Any]] = []
     for name, tool in tools.items():
-        actions = [
+        actions: list[str] = [
             attr
             for attr in dir(tool)
             if not attr.startswith("_") and callable(getattr(tool, attr, None))
         ]
-        descriptors.append({"name": name, "actions": sorted(set(actions))})
+        signatures = {}
+        for action in actions:
+            fn = getattr(tool, action, None)
+            if not callable(fn):
+                continue
+            signatures[action] = _format_action_signature(action, fn)
+        descriptors.append(
+            {
+                "name": name,
+                "actions": sorted(set(actions)),
+                "signatures": signatures,
+            }
+        )
     return descriptors
 
 
@@ -196,3 +206,66 @@ def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRe
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
+
+
+def _format_action_signature(action: str, fn: Any) -> str:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return f"{action}()"
+
+    chunks: list[str] = []
+    for param in signature.parameters.values():
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            chunks.append(f"*{param.name}")
+            continue
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            chunks.append(f"**{param.name}")
+            continue
+        if param.default is inspect._empty:
+            chunks.append(param.name)
+        else:
+            chunks.append(f"{param.name}=?")
+    return f"{action}({', '.join(chunks)})"
+
+
+def _format_tool_message(record: ToolCallRecord, *, max_chars: int | None = None) -> str:
+    if max_chars is None:
+        max_chars = 60_000 if record.tool_name == "file" else 20_000
+    payload = {
+        "ok": record.ok,
+        "summary": record.summary,
+        "data": record.data,
+        "error": record.error,
+    }
+    max_str_candidates = (40_000, 20_000, 10_000, 4_000) if record.tool_name == "file" else (10_000, 4_000, 2_000, 1_000)
+    for max_str in max_str_candidates:
+        truncated = _truncate_jsonish(payload, max_str=max_str, max_list=100, max_depth=4)
+        text = json.dumps(truncated, sort_keys=True)
+        if len(text) <= max_chars:
+            return text
+    minimal = {"ok": record.ok, "summary": record.summary, "error": record.error, "data": {"_truncated": True}}
+    return json.dumps(minimal, sort_keys=True)
+
+
+def _truncate_jsonish(value: Any, *, max_str: int, max_list: int, max_depth: int) -> Any:
+    if max_depth <= 0:
+        return "<truncated>"
+    if isinstance(value, str):
+        if len(value) <= max_str:
+            return value
+        return value[:max_str] + f"...(truncated {len(value) - max_str} chars)"
+    if isinstance(value, list):
+        if len(value) <= max_list:
+            return [_truncate_jsonish(v, max_str=max_str, max_list=max_list, max_depth=max_depth - 1) for v in value]
+        head = value[:max_list]
+        head_truncated = [
+            _truncate_jsonish(v, max_str=max_str, max_list=max_list, max_depth=max_depth - 1) for v in head
+        ]
+        return [*head_truncated, f"...(truncated {len(value) - max_list} items)"]
+    if isinstance(value, dict):
+        return {
+            k: _truncate_jsonish(v, max_str=max_str, max_list=max_list, max_depth=max_depth - 1)
+            for k, v in value.items()
+        }
+    return value

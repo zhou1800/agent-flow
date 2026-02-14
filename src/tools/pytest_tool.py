@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -17,11 +18,33 @@ class PytestTool:
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def run(self, args: list[str]) -> ToolResult:
+    def run(self, args: list[str] | None = None, pytest_args: list[str] | None = None) -> ToolResult:
         start = time.perf_counter()
-        cmd = [sys.executable, "-m", "pytest", *args]
+        normalized_args = args if args is not None else pytest_args
+        if normalized_args is None:
+            return ToolResult(
+                ok=False,
+                summary="pytest args missing",
+                data={},
+                elapsed_ms=_elapsed_ms(start),
+                error="expected args: list[str]",
+            )
+        cmd = [sys.executable, "-m", "pytest", *normalized_args]
+        env = os.environ.copy()
+        tmp_root = _ensure_tmp_root(self.root)
+        if tmp_root is not None:
+            env.update({"TMPDIR": str(tmp_root), "TEMP": str(tmp_root), "TMP": str(tmp_root)})
+            if "--basetemp" not in normalized_args:
+                cmd.extend(["--basetemp", str(tmp_root / f"pytest-{int(time.time() * 1000)}")])
         try:
-            result = subprocess.run(cmd, cwd=_safe_cwd(self.root), capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                cmd,
+                cwd=_safe_cwd(self.root),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             output = result.stdout + "\n" + result.stderr
             passed, failed = _parse_counts(output)
             failing_tests = _parse_failures(output)
@@ -67,3 +90,12 @@ def _parse_failures(output: str) -> list[str]:
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
+
+
+def _ensure_tmp_root(root: Path) -> Path | None:
+    try:
+        tmp_root = (root / ".agent-flow-tmp").resolve()
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        return tmp_root
+    except Exception:
+        return None

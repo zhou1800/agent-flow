@@ -4,6 +4,7 @@ from pathlib import Path
 
 from llm.client import MockLLMClient
 from self_improve.orchestrator import SelfImproveOrchestrator, SelfImproveSettings
+from self_improve.workspace import clone_master, compute_changes
 
 
 def test_self_improve_runs_sessions_and_merges_winner(tmp_path: Path) -> None:
@@ -53,3 +54,19 @@ def test_self_improve_runs_sessions_and_merges_winner(tmp_path: Path) -> None:
     assert report.batches[0].master_evaluation is not None
     assert report.batches[0].master_evaluation.ok is True
     assert "return a + b" in (master / "proj" / "app.py").read_text()
+
+
+def test_compute_changes_detects_added_files_when_workspace_path_contains_runs(tmp_path: Path) -> None:
+    master = tmp_path / "master"
+    (master / "proj").mkdir(parents=True, exist_ok=True)
+    (master / "proj" / "app.py").write_text("print('hello')\n")
+
+    workspace_root = tmp_path / "runs" / "session-workspace"
+    clone_master(master, workspace_root, include_paths=["proj"])
+    (workspace_root / "proj" / "new_file.txt").write_text("new\n")
+
+    changes = compute_changes(master, workspace_root, include_paths=["proj"])
+    assert any(
+        change.kind == "add" and change.relpath == str(Path("proj") / "new_file.txt")
+        for change in changes
+    )
