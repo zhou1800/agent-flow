@@ -104,6 +104,7 @@ Agent-Flow is a production-grade manager/worker (hierarchical) agent system that
 ### Self-Improvement Mode (Multi-Session / Batch)
 - When invoked with a self-improvement goal, the system can accept optional “inputs”:
   - URL (http/https), local file path, or inline text (or none).
+- If `--input` is not provided, the system may auto-detect URL(s) embedded in the `--goal` text and fetch at least the first URL as the session input payload (bounded by byte/time limits).
 - The system runs a batch of N independent improvement sessions in parallel.
 - Before launching each batch, the system runs an evaluation on the current master workspace (pytest by default) and passes a compact summary (pass/fail counts + failing test ids) into every session as context.
 - Each session:

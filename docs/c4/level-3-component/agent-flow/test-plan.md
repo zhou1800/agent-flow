@@ -27,6 +27,7 @@ This document maps requirements to automated tests.
     - merge is disabled (`--no-merge` / report-only mode), or
     - a batch fails to produce a mergeable winner (evaluation fails).
   - Passes `pytest_args` into the hierarchical runner so per-step progress metrics include test counts.
+  - Auto-detects URL(s) in `--goal` and fetches content as session input when `--input` is not provided.
 
 ## Benchmark Task Tests
 - Each benchmark task includes pytest acceptance tests.

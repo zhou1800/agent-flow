@@ -16,7 +16,7 @@ from runners.hierarchical import HierarchicalRunner
 from tools.pytest_tool import PytestTool
 
 from .source import InputPayload
-from .source import read_optional_input
+from .source import read_goal_input
 from .workspace import WorkspaceChange
 from .workspace import clone_master
 from .workspace import compute_changes
@@ -96,7 +96,7 @@ class SelfImproveOrchestrator:
         self.llm_factory = _wrap_llm_factory(llm_factory) if llm_factory else (lambda _sid, _ws: MockLLMClient(script=[]))
 
     def run(self, goal: str, input_ref: str | None = None) -> SelfImproveReport:
-        input_payload = read_optional_input(input_ref)
+        input_payload = read_goal_input(goal, input_ref)
         run_context = self._create_self_improve_run()
         batches: list[SelfImproveBatchResult] = []
         for batch_index in range(1, self.settings.batches + 1):
