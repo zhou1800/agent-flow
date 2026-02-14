@@ -99,6 +99,7 @@ class SelfImproveOrchestrator:
     def run(self, goal: str, input_ref: str | None = None) -> SelfImproveReport:
         input_payload = read_goal_input(goal, input_ref)
         run_context = self._create_self_improve_run()
+        self._write_status(run_context, goal, input_payload, status="RUNNING", batches=[])
         batches: list[SelfImproveBatchResult] = []
         for batch_index in range(1, self.settings.batches + 1):
             batch = self._run_batch(run_context, batch_index, goal, input_payload)
@@ -272,6 +273,45 @@ class SelfImproveOrchestrator:
         md_path = run_context.root / "self_improve.md"
         md_path.write_text(_report_to_markdown(report))
 
+    def _write_status(self, run_context: RunContext, goal: str, input_payload: InputPayload, *, status: str,
+                      batches: list[SelfImproveBatchResult]) -> None:
+        json_path = run_context.root / "self_improve.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "goal": goal,
+                    "input": {"kind": input_payload.kind, "ref": input_payload.ref},
+                    "run_root": str(run_context.root),
+                    "settings": self._settings_dict(),
+                    "batches": [
+                        {
+                            "batch_index": batch.batch_index,
+                            "winner_session_id": batch.winner_session_id,
+                            "merged": batch.merged,
+                        }
+                        for batch in batches
+                    ],
+                },
+                indent=2,
+            )
+        )
+        md_path = run_context.root / "self_improve.md"
+        md_path.write_text(
+            "\n".join(
+                [
+                    "# Agent-Flow Self-Improve Report",
+                    "",
+                    f"Status: {status}",
+                    "",
+                    f"Goal: {goal}",
+                    "",
+                    f"Input: {input_payload.kind} {input_payload.ref or ''}".strip(),
+                    "",
+                ]
+            )
+        )
+
     def _settings_dict(self) -> dict[str, Any]:
         return {
             "sessions_per_batch": self.settings.sessions_per_batch,
@@ -371,6 +411,7 @@ def _score(
 
 def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
     return {
+        "status": "COMPLETED",
         "goal": report.goal,
         "input": {"kind": report.input_payload.kind, "ref": report.input_payload.ref},
         "run_root": report.run_root,
@@ -408,6 +449,8 @@ def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
 def _report_to_markdown(report: SelfImproveReport) -> str:
     lines = [
         "# Agent-Flow Self-Improve Report",
+        "",
+        "Status: COMPLETED",
         "",
         f"Goal: {report.goal}",
         "",
