@@ -501,7 +501,7 @@ def _summarize_workflow_state(workflow_state_path: Path) -> tuple[bool | None, s
             continue
         status = str(step.get("status") or "")
         statuses.append(status)
-        if status != "SUCCEEDED":
+        if status not in {"SUCCEEDED", "SKIPPED"}:
             outputs = step.get("outputs") if isinstance(step.get("outputs"), dict) else {}
             summary = outputs.get("summary") if isinstance(outputs, dict) else None
             error = step.get("error")
@@ -526,6 +526,6 @@ def _overall_workflow_status(statuses: list[str]) -> str:
         return "BLOCKED"
     if any(status == "PARTIAL" for status in statuses):
         return "PARTIAL"
-    if statuses and all(status == "SUCCEEDED" for status in statuses):
+    if statuses and all(status in {"SUCCEEDED", "SKIPPED"} for status in statuses):
         return "SUCCEEDED"
     return "UNKNOWN"

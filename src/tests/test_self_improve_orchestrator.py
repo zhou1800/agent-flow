@@ -203,3 +203,53 @@ def test_self_improve_records_per_step_pytest_metrics(tmp_path: Path) -> None:
     attempts = payload["state"]["steps"]["noop"]["attempts"]
     assert attempts
     assert isinstance(attempts[0]["progress_metrics"].get("passed_tests"), int)
+
+
+def test_self_improve_counts_skipped_steps_as_succeeded(tmp_path: Path) -> None:
+    master = tmp_path / "master"
+    (master / "proj").mkdir(parents=True, exist_ok=True)
+    (master / "proj" / "__init__.py").write_text("")
+    (master / "proj" / "app.py").write_text("def add(a, b):\n    return a + b\n")
+    (master / "proj" / "tests").mkdir(parents=True, exist_ok=True)
+    (master / "proj" / "tests" / "test_app.py").write_text(
+        "from proj.app import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+
+    def llm_factory(_session_id: str) -> MockLLMClient:
+        return MockLLMClient(
+            script=[
+                {
+                    "status": "SUCCESS",
+                    "summary": "planned",
+                    "workflow": {
+                        "steps": [
+                            {"id": "check", "worker": "Implementer"},
+                            {"id": "unneeded", "worker": "Implementer", "depends_on": ["check"]},
+                        ]
+                    },
+                },
+                {
+                    "status": "SUCCESS",
+                    "summary": "tests green; terminate early",
+                    "metrics": {"terminate_workflow": True, "terminate_reason": "tests green"},
+                    "artifacts": [],
+                    "next_actions": [],
+                    "failure_signature": "",
+                },
+            ]
+        )
+
+    settings = SelfImproveSettings(
+        sessions_per_batch=1,
+        batches=1,
+        max_workers=1,
+        include_paths=["proj"],
+        pytest_args=["proj/tests"],
+        merge_on_success=False,
+    )
+    orchestrator = SelfImproveOrchestrator(master, llm_factory=llm_factory, settings=settings)
+    report = orchestrator.run("Terminate early", input_ref=None)
+
+    session = report.batches[0].sessions[0]
+    assert session.workflow_ok is True
+    assert session.workflow_status == "SUCCEEDED"
