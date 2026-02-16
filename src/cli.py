@@ -149,13 +149,13 @@ def main(argv: list[str] | None = None) -> int:
         def llm_factory(_session_id: str, workspace_dir: Path):
             if llm_provider in {"codex", "codex-cli"}:
                 codex_settings = CodexCLISettings.from_env()
-                if "AGENT_FLOW_CODEX_SANDBOX" not in os.environ:
+                if "TOKIMON_CODEX_SANDBOX" not in os.environ and "AGENT_FLOW_CODEX_SANDBOX" not in os.environ:
                     codex_settings = replace(codex_settings, sandbox="workspace-write")
-                if "AGENT_FLOW_CODEX_APPROVAL" not in os.environ:
+                if "TOKIMON_CODEX_APPROVAL" not in os.environ and "AGENT_FLOW_CODEX_APPROVAL" not in os.environ:
                     codex_settings = replace(codex_settings, ask_for_approval="never")
-                if "AGENT_FLOW_CODEX_SEARCH" not in os.environ:
+                if "TOKIMON_CODEX_SEARCH" not in os.environ and "AGENT_FLOW_CODEX_SEARCH" not in os.environ:
                     codex_settings = replace(codex_settings, search=True)
-                if "AGENT_FLOW_CODEX_TIMEOUT_S" not in os.environ:
+                if "TOKIMON_CODEX_TIMEOUT_S" not in os.environ and "AGENT_FLOW_CODEX_TIMEOUT_S" not in os.environ:
                     codex_settings = replace(codex_settings, timeout_s=240)
                 return CodexCLIClient(workspace_dir, settings=codex_settings)
             return build_llm_client(llm_provider, workspace_dir=workspace_dir)
