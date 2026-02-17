@@ -16,6 +16,7 @@ This document maps requirements to automated tests.
 - Worker tool loop: tool calls execute and are reflected in worker metrics (model/tool call counts).
 - Trace loop unrolling: worker model/tool calls are recorded to `trace.jsonl` with bounded payload sizes.
 - Codex CLI prompt rendering: deterministic prompt envelope with stable tool ordering and explicit context sections.
+- Codex CLI ripgrep guard: guard on/off, guard config contents, `RIPGREP_CONFIG_PATH` override/preservation, max-columns default and disable=0.
 
 ## Integration Tests
 - End-to-end run of at least two benchmark tasks using the mock model:
