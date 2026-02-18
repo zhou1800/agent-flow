@@ -2,8 +2,9 @@
 
 This document tracks prioritized follow-up work to reduce OOM risk and improve runtime reliability.
 
-1. [ ] OOM and reliability hardening (Owner: TBD)
+1. [x] OOM and reliability hardening (Owner: TBD)
    - Acceptance criteria: Use Tokimon to identify, prioritize, and implement the required safeguards and validation to prevent OOM regressions and improve runtime reliability.
+   - Verification: `pytest --maxfail=1 -c src/pyproject.toml src/tests` (passes); see `src/tests/test_codex_ripgrep_guard.py`, `src/llm/client.py`, and `src/tests/test_trace_unrolling.py`.
 2. [x] Relocate `runs/` to repo root (Owner: TBD)
    - Acceptance criteria: Store `runs/` as a repo-root sibling of `src/` and `docs/`, and update all setup and usage instructions accordingly.
 3. [ ] Self-improve from Codex agent loop article (Owner: TBD)
