@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import inspect
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,6 +48,7 @@ class SelfImproveSettings:
     pytest_args: list[str] = field(
         default_factory=lambda: ["--maxfail=1", "-c", "src/pyproject.toml", "src/tests"]
     )
+    entrypoint_max_attempts: int = 3
     merge_on_success: bool = True
 
 
@@ -60,6 +62,12 @@ class EvaluationResult:
 
 
 @dataclass(frozen=True)
+class VerificationResult:
+    ok: bool
+    reason: str
+
+
+@dataclass(frozen=True)
 class SelfImproveSessionResult:
     session_id: str
     workspace_root: str
@@ -68,12 +76,17 @@ class SelfImproveSessionResult:
     workflow_status: str | None
     workflow_error: str | None
     evaluation: EvaluationResult
-    score: tuple[int, int, int, int, int]
+    score: tuple[int, int, int, int, int, int]
     model_calls: int
     tool_calls: int
     changed_files: list[str]
     changes: list[WorkspaceChange]
     error: str | None = None
+    verification_ok: bool = False
+    verification_reason: str | None = None
+    clarifying_questions: list[str] = field(default_factory=list)
+    entrypoint_attempts: int = 0
+    attempts: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -176,60 +189,210 @@ class SelfImproveOrchestrator:
         clone_master(self.master_root, workspace_dir, include_paths=self.settings.include_paths)
 
         llm_client = self.llm_factory(session_id, workspace_dir)
-        session_goal = _session_goal(goal, session_id, input_payload, baseline_master_eval, self.settings.pytest_args)
         runner = HierarchicalRunner(workspace_dir, llm_client, base_dir=workspace_dir / "runs")
 
-        run_root = None
-        error = None
+        run_root: str | None = None
+        error: str | None = None
         workflow_ok: bool | None = None
         workflow_status: str | None = None
         workflow_error: str | None = None
         model_calls = 0
         tool_calls = 0
+        verification = VerificationResult(ok=False, reason="verification not run")
+        clarifying_questions = _clarifying_questions_for_goal(goal)
+        attempts: list[dict[str, Any]] = []
+        entrypoint_max_attempts = max(1, int(self.settings.entrypoint_max_attempts))
 
         session_report: dict[str, Any] = {
             "session_id": session_id,
-            "goal": session_goal,
+            "goal": goal,
             "input": {"kind": input_payload.kind, "ref": input_payload.ref},
             "master_baseline_evaluation": baseline_master_eval.__dict__,
             "pytest_args": list(self.settings.pytest_args),
+            "entrypoint_max_attempts": entrypoint_max_attempts,
+            "clarifying_questions": clarifying_questions,
+            "attempts": attempts,
             "status": "RUNNING",
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
-        try:
-            result = runner.run(
-                session_goal,
-                task_steps=None,
-                task_id=f"self-improve-{session_id}",
-                test_args=self.settings.pytest_args,
-                concurrency=self.settings.session_concurrency,
-            )
-            run_root = str(result.run_context.root)
-            workflow_ok, workflow_status, workflow_error = _summarize_workflow_state(result.workflow_state_path)
-            if workflow_ok is False and error is None:
-                error = workflow_error or "workflow failed"
-            model_calls = result.model_calls
-            tool_calls = result.tool_calls
-        except Exception as exc:
-            error = str(exc)
 
-        evaluation = self._evaluate_workspace(workspace_dir)
-        changes = compute_changes(self.master_root, workspace_dir, include_paths=self.settings.include_paths)
-        changed_files = [change.relpath for change in changes]
-        score = _score(evaluation, workflow_ok, len(changed_files), model_calls, tool_calls)
+        if clarifying_questions:
+            workflow_ok = False
+            workflow_status = "BLOCKED"
+            workflow_error = "request is ambiguous; clarification needed before prompt generation"
+            error = workflow_error
+            verification = VerificationResult(ok=False, reason=workflow_error)
+            evaluation = self._evaluate_workspace(workspace_dir)
+            changes = compute_changes(self.master_root, workspace_dir, include_paths=self.settings.include_paths)
+            changed_files = [change.relpath for change in changes]
+            score = _score(
+                verification.ok,
+                evaluation,
+                workflow_ok,
+                len(changed_files),
+                model_calls,
+                tool_calls,
+            )
+            session_report.update(
+                {
+                    "status": "BLOCKED",
+                    "workflow_ok": workflow_ok,
+                    "workflow_status": workflow_status,
+                    "workflow_error": workflow_error,
+                    "evaluation": evaluation.__dict__,
+                    "model_calls": model_calls,
+                    "tool_calls": tool_calls,
+                    "changed_files": changed_files,
+                    "verification": verification.__dict__,
+                    "entrypoint_attempts": 0,
+                    "error": error,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
+            return SelfImproveSessionResult(
+                session_id=session_id,
+                workspace_root=str(workspace_dir),
+                run_root=run_root,
+                workflow_ok=workflow_ok,
+                workflow_status=workflow_status,
+                workflow_error=workflow_error,
+                evaluation=evaluation,
+                score=score,
+                model_calls=model_calls,
+                tool_calls=tool_calls,
+                changed_files=changed_files,
+                changes=changes,
+                error=error,
+                verification_ok=verification.ok,
+                verification_reason=verification.reason,
+                clarifying_questions=clarifying_questions,
+                entrypoint_attempts=0,
+                attempts=attempts,
+            )
+
+        evaluation = baseline_master_eval
+        changes: list[WorkspaceChange] = []
+        changed_files: list[str] = []
+        entrypoint_attempts = 0
+
+        for attempt_index in range(1, entrypoint_max_attempts + 1):
+            entrypoint_attempts = attempt_index
+            retry_reason = verification.reason if attempt_index > 1 else None
+            session_goal = _entrypoint_prompt(
+                goal,
+                session_id,
+                input_payload,
+                baseline_master_eval,
+                self.settings.pytest_args,
+                attempt_index=attempt_index,
+                retry_reason=retry_reason,
+            )
+            attempt_report: dict[str, Any] = {
+                "attempt": attempt_index,
+                "prompt": session_goal,
+                "status": "RUNNING",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }
+            attempts.append(attempt_report)
+            session_report.update({"status": "RUNNING", "entrypoint_attempts": attempt_index})
+            (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
+
+            attempt_run_root = None
+            attempt_error: str | None = None
+            attempt_workflow_ok: bool | None = None
+            attempt_workflow_status: str | None = None
+            attempt_workflow_error: str | None = None
+            attempt_model_calls = 0
+            attempt_tool_calls = 0
+
+            try:
+                result = runner.run(
+                    session_goal,
+                    task_steps=None,
+                    task_id=f"self-improve-{session_id}-attempt-{attempt_index}",
+                    test_args=self.settings.pytest_args,
+                    concurrency=self.settings.session_concurrency,
+                )
+                attempt_run_root = str(result.run_context.root)
+                attempt_workflow_ok, attempt_workflow_status, attempt_workflow_error = _summarize_workflow_state(
+                    result.workflow_state_path
+                )
+                if attempt_workflow_ok is False and attempt_error is None:
+                    attempt_error = attempt_workflow_error or "workflow failed"
+                attempt_model_calls = int(result.model_calls or 0)
+                attempt_tool_calls = int(result.tool_calls or 0)
+            except Exception as exc:
+                attempt_error = str(exc)
+
+            run_root = attempt_run_root or run_root
+            workflow_ok = attempt_workflow_ok
+            workflow_status = attempt_workflow_status
+            workflow_error = attempt_workflow_error
+            error = attempt_error
+            model_calls += attempt_model_calls
+            tool_calls += attempt_tool_calls
+
+            changes = compute_changes(self.master_root, workspace_dir, include_paths=self.settings.include_paths)
+            purge_bytecode_for_changes(workspace_dir, changes)
+            evaluation = self._evaluate_workspace(workspace_dir)
+            changed_files = [change.relpath for change in changes]
+            verification = _verify_session_outcome(
+                goal,
+                baseline_master_eval,
+                evaluation,
+                workflow_ok,
+                changed_files,
+                error,
+            )
+            attempt_report.update(
+                {
+                    "status": "COMPLETED" if verification.ok else "FAILED",
+                    "run_root": run_root,
+                    "workflow_ok": workflow_ok,
+                    "workflow_status": workflow_status,
+                    "workflow_error": workflow_error,
+                    "evaluation": evaluation.__dict__,
+                    "model_calls": attempt_model_calls,
+                    "tool_calls": attempt_tool_calls,
+                    "changed_files": changed_files,
+                    "error": error,
+                    "verification": verification.__dict__,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            session_report.update(
+                {
+                    "status": "COMPLETED" if verification.ok else "RETRYING",
+                    "run_root": run_root,
+                    "workflow_ok": workflow_ok,
+                    "workflow_status": workflow_status,
+                    "workflow_error": workflow_error,
+                    "evaluation": evaluation.__dict__,
+                    "model_calls": model_calls,
+                    "tool_calls": tool_calls,
+                    "changed_files": changed_files,
+                    "verification": verification.__dict__,
+                    "entrypoint_attempts": attempt_index,
+                    "error": error,
+                }
+            )
+            (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
+            if verification.ok:
+                break
+
+        score = _score(
+            verification.ok,
+            evaluation,
+            workflow_ok,
+            len(changed_files),
+            model_calls,
+            tool_calls,
+        )
         session_report.update(
             {
-                "status": "COMPLETED",
-                "run_root": run_root,
-                "workflow_ok": workflow_ok,
-                "workflow_status": workflow_status,
-                "workflow_error": workflow_error,
-                "evaluation": evaluation.__dict__,
-                "model_calls": model_calls,
-                "tool_calls": tool_calls,
-                "changed_files": changed_files,
-                "error": error,
+                "status": "COMPLETED" if verification.ok else "FAILED",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -248,6 +411,11 @@ class SelfImproveOrchestrator:
             changed_files=changed_files,
             changes=changes,
             error=error,
+            verification_ok=verification.ok,
+            verification_reason=verification.reason,
+            clarifying_questions=clarifying_questions,
+            entrypoint_attempts=entrypoint_attempts,
+            attempts=attempts,
         )
 
     def _evaluate_workspace(self, root: Path) -> EvaluationResult:
@@ -265,6 +433,8 @@ class SelfImproveOrchestrator:
         )
 
     def _merge_winner(self, winner: SelfImproveSessionResult) -> tuple[bool, EvaluationResult | None]:
+        if not winner.verification_ok:
+            return False, None
         if not winner.evaluation.ok:
             return False, None
         if not winner.changes:
@@ -380,22 +550,37 @@ class SelfImproveOrchestrator:
             "session_concurrency": self.settings.session_concurrency,
             "include_paths": self.settings.include_paths,
             "pytest_args": self.settings.pytest_args,
+            "entrypoint_max_attempts": self.settings.entrypoint_max_attempts,
             "merge_on_success": self.settings.merge_on_success,
         }
 
 
-def _session_goal(
+def _entrypoint_prompt(
     goal: str,
     session_id: str,
     input_payload: InputPayload,
     baseline_master_eval: EvaluationResult,
     pytest_args: list[str],
+    *,
+    attempt_index: int,
+    retry_reason: str | None,
 ) -> str:
     strategy = _strategy_hint(session_id)
     parts = [
-        goal.strip(),
+        "Self-improve entry-point task.",
+        "",
+        "Execution flow (must be followed in order):",
+        "1) Understand the user request; if ambiguous, stop and ask clarifying questions immediately.",
+        "2) Once clear, continue.",
+        "3) Generate a concrete prompt/plan tied to requested outcomes.",
+        "4) Run the agent workflow with the generated prompt.",
+        "5) Monitor and report progress.",
+        "6) Verify final outcome; if verification fails, return details so the orchestrator retries from step 3.",
+        "",
+        f"User request: {goal.strip()}",
         "",
         f"Session: {session_id}",
+        f"Attempt: {attempt_index}",
         f"Strategy: {strategy}",
         "",
         "Master baseline evaluation (before this session):",
@@ -407,6 +592,15 @@ def _session_goal(
         "Evaluation command (run via pytest tool):",
         f"- args: {pytest_args}",
     ]
+    if retry_reason:
+        parts.extend(
+            [
+                "",
+                "Previous attempt verification failed:",
+                f"- {retry_reason}",
+                "Retry from step 3 with a revised concrete prompt and implementation plan.",
+            ]
+        )
     if input_payload.kind != "none":
         parts.extend(
             [
@@ -448,19 +642,21 @@ def _strategy_hint(session_id: str) -> str:
 
 
 def _score(
+    verification_ok: bool,
     evaluation: EvaluationResult,
     workflow_ok: bool | None,
     changed_files: int,
     model_calls: int,
     tool_calls: int,
-) -> tuple[int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, int]:
+    verified = 1 if verification_ok else 0
     ok = 1 if evaluation.ok else 0
     workflow = 1 if workflow_ok else 0
     has_changes = 1 if changed_files > 0 else 0
     passed = int(evaluation.passed or 0)
     failed = int(evaluation.failed or 9999)
-    # Primary: tests pass; Secondary: workflow completes; Tertiary: prefer actual changes; then maximize passed.
-    return (ok, workflow, has_changes, passed, -failed - tool_calls - model_calls)
+    # Primary: verification outcome; Secondary: tests pass; then workflow and concrete changes.
+    return (verified, ok, workflow, has_changes, passed, -failed - tool_calls - model_calls)
 
 
 def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
@@ -489,6 +685,11 @@ def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
                         "model_calls": session.model_calls,
                         "tool_calls": session.tool_calls,
                         "changed_files": session.changed_files,
+                        "verification_ok": session.verification_ok,
+                        "verification_reason": session.verification_reason,
+                        "clarifying_questions": session.clarifying_questions,
+                        "entrypoint_attempts": session.entrypoint_attempts,
+                        "attempts": session.attempts,
                         "error": session.error,
                         "score": list(session.score),
                     }
@@ -525,15 +726,94 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
                 f"Master eval: ok={batch.master_evaluation.ok} passed={batch.master_evaluation.passed} failed={batch.master_evaluation.failed}"
             )
         lines.append("")
-        lines.append("| Session | OK | Passed | Failed | Workflow | Model | Tool | Changed Files | Workspace | Run |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| Session | Verified | OK | Passed | Failed | Workflow | Attempts | Model | Tool | Changed Files | Workspace | Run |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for session in batch.sessions:
             lines.append(
-                f"| {session.session_id} | {session.evaluation.ok} | {session.evaluation.passed} | {session.evaluation.failed} | "
-                f"{session.workflow_status or ''} | {session.model_calls} | {session.tool_calls} | {len(session.changed_files)} | {session.workspace_root} | {session.run_root or ''} |"
+                f"| {session.session_id} | {session.verification_ok} | {session.evaluation.ok} | {session.evaluation.passed} | {session.evaluation.failed} | "
+                f"{session.workflow_status or ''} | {session.entrypoint_attempts} | {session.model_calls} | {session.tool_calls} | {len(session.changed_files)} | {session.workspace_root} | {session.run_root or ''} |"
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def _clarifying_questions_for_goal(goal: str) -> list[str]:
+    normalized = " ".join((goal or "").strip().split())
+    if not normalized:
+        return [
+            "What exact change do you want Tokimon to make?",
+            "Which files, docs, or tests should this update target?",
+        ]
+
+    generic = {
+        "fix it",
+        "improve it",
+        "work on it",
+        "do it",
+        "help",
+        "make it better",
+        "something",
+    }
+    if normalized.lower() in generic:
+        return [
+            "What concrete outcome should be verified at the end?",
+            "Which repository area should Tokimon modify first?",
+        ]
+    return []
+
+
+def _goal_requires_changes(goal: str) -> bool:
+    text = (goal or "").strip().lower()
+    if not text:
+        return False
+    verbs = (
+        "fix",
+        "improve",
+        "implement",
+        "add",
+        "update",
+        "modify",
+        "refactor",
+        "harden",
+        "work on",
+    )
+    return any(re.search(rf"\b{re.escape(verb)}\b", text) for verb in verbs)
+
+
+def _verify_session_outcome(
+    goal: str,
+    baseline_master_eval: EvaluationResult,
+    evaluation: EvaluationResult,
+    workflow_ok: bool | None,
+    changed_files: list[str],
+    error: str | None,
+) -> VerificationResult:
+    if error:
+        return VerificationResult(ok=False, reason=f"agent run error: {error}")
+    if workflow_ok is not True:
+        return VerificationResult(ok=False, reason=f"workflow not successful: {workflow_ok}")
+    if not evaluation.ok:
+        failed = evaluation.failed if evaluation.failed is not None else "unknown"
+        return VerificationResult(ok=False, reason=f"verification tests failed: failed={failed}")
+
+    requires_changes = _goal_requires_changes(goal)
+    if requires_changes and not changed_files:
+        return VerificationResult(
+            ok=False,
+            reason="verification failed: goal requires concrete repo changes but none were produced",
+        )
+
+    baseline_failed = int(baseline_master_eval.failed or 0)
+    current_failed = int(evaluation.failed or 0)
+    if baseline_failed > 0 and current_failed > baseline_failed:
+        return VerificationResult(
+            ok=False,
+            reason=(
+                "verification failed: regression detected "
+                f"(baseline failed={baseline_failed}, current failed={current_failed})"
+            ),
+        )
+    return VerificationResult(ok=True, reason="verification passed")
 
 
 def _summarize_workflow_state(workflow_state_path: Path) -> tuple[bool | None, str | None, str | None]:

@@ -117,12 +117,15 @@ def test_self_improve_merge_resolves_conflicts_and_commits(tmp_path: Path) -> No
         workflow_status="SUCCEEDED",
         workflow_error=None,
         evaluation=EvaluationResult(ok=True, passed=1, failed=0, failing_tests=[], elapsed_s=0.0),
-        score=(1, 1, 1, 1, 1),
+        score=(1, 1, 1, 1, 1, 1),
         model_calls=0,
         tool_calls=0,
         changed_files=[change.relpath for change in changes],
         changes=changes,
         error=None,
+        verification_ok=True,
+        verification_reason="verification passed",
+        entrypoint_attempts=1,
     )
 
     merged, master_eval = orchestrator._merge_winner(winner)

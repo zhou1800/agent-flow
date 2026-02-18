@@ -162,6 +162,15 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Prefer writing/expanding tests and updating docs before code changes (Helix).
   - Use tools for repo context retrieval (grep/file), patching, and evaluation.
 
+#### Self-Improve Entry-Point Request Loop
+- For entry-point self-improve tasks, each session follows this loop:
+  - Understand the user request and ask clarifying questions immediately when it is ambiguous.
+  - Once clear, generate the task prompt for the attempt.
+  - Run the agent workflow with that prompt.
+  - Monitor and report progress per attempt in the session report artifact.
+  - Verify the outcome using workflow status plus evaluation checks.
+  - If verification fails, restart from prompt generation (retry loop) until success or attempt budget is exhausted.
+
 ## Repository Layout
 - Tokimon project root lives under `src/` in this repository.
 - Python sources live directly under `src/` (e.g., `cli.py`, `agents/`, `workflow/`).

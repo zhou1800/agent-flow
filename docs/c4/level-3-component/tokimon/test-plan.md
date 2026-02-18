@@ -40,6 +40,10 @@ This document maps requirements to automated tests.
   - Runs all configured batches even when:
     - merge is disabled (`--no-merge` / report-only mode), or
     - a batch fails to produce a mergeable winner (evaluation fails).
+  - Entry-point loop behavior:
+    - Ambiguous goals block immediately with clarifying questions.
+    - Verification failures trigger a retry from prompt generation in the same session.
+    - Winners are merged only when verification succeeds.
   - Passes `pytest_args` into the hierarchical runner so per-step progress metrics include test counts.
   - Auto-detects URL(s) in `--goal` and fetches content as session input when `--input` is not provided.
   - URL fetching respects the WebTool network policy (org allowlist + optional request allowlist).
