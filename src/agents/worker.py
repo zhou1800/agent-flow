@@ -98,6 +98,7 @@ class Worker:
                             **trace_base,
                             "iteration": iteration,
                             "tool_name": record.tool_name,
+                            "tool_call_id": record.call_id,
                             "ok": record.ok,
                             "summary": record.summary,
                             "elapsed_ms": record.elapsed_ms,
@@ -222,9 +223,18 @@ def _parse_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
     return [call for call in tool_calls if isinstance(call, dict)]
 
 
+def _coerce_tool_call_id(call: dict[str, Any]) -> str | None:
+    raw = call.get("call_id")
+    if not isinstance(raw, str):
+        return None
+    cleaned = raw.strip()
+    return cleaned or None
+
+
 def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRecord:
     start = time.perf_counter()
     tool_name = str(call.get("tool", ""))
+    call_id = _coerce_tool_call_id(call)
     action = str(call.get("action", ""))
     args = call.get("args", {}) or {}
     if not isinstance(args, dict):
@@ -234,6 +244,7 @@ def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRe
     if tool is None:
         return ToolCallRecord(
             tool_name=tool_name or "<missing>",
+            call_id=call_id,
             ok=False,
             summary="unknown tool",
             data={"action": action, "args": args},
@@ -245,6 +256,7 @@ def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRe
     if not callable(fn):
         return ToolCallRecord(
             tool_name=tool_name,
+            call_id=call_id,
             ok=False,
             summary="unknown action",
             data={"action": action, "args": args},
@@ -257,6 +269,7 @@ def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRe
         if not isinstance(result, ToolResult):
             return ToolCallRecord(
                 tool_name=tool_name,
+                call_id=call_id,
                 ok=True,
                 summary="tool returned non-ToolResult",
                 data={"result": result},
@@ -265,6 +278,7 @@ def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRe
             )
         return ToolCallRecord(
             tool_name=tool_name,
+            call_id=call_id,
             ok=result.ok,
             summary=result.summary,
             data=result.data,
@@ -274,6 +288,7 @@ def _invoke_tool_call(tools: dict[str, Any], call: dict[str, Any]) -> ToolCallRe
     except Exception as exc:
         return ToolCallRecord(
             tool_name=tool_name,
+            call_id=call_id,
             ok=False,
             summary="tool exception",
             data={"action": action, "args": args},
@@ -311,6 +326,7 @@ def _format_tool_message(record: ToolCallRecord, *, max_chars: int | None = None
     if max_chars is None:
         max_chars = 60_000 if record.tool_name == "file" else 20_000
     payload = {
+        "call_id": record.call_id,
         "ok": record.ok,
         "summary": record.summary,
         "data": record.data,
@@ -322,7 +338,13 @@ def _format_tool_message(record: ToolCallRecord, *, max_chars: int | None = None
         text = json.dumps(truncated, sort_keys=True)
         if len(text) <= max_chars:
             return text
-    minimal = {"ok": record.ok, "summary": record.summary, "error": record.error, "data": {"_truncated": True}}
+    minimal = {
+        "call_id": record.call_id,
+        "ok": record.ok,
+        "summary": record.summary,
+        "error": record.error,
+        "data": {"_truncated": True},
+    }
     return json.dumps(minimal, sort_keys=True)
 
 

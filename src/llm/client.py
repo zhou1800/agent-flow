@@ -459,7 +459,7 @@ def _render_prompt(
             "",
             "Output contract:",
             "- Reply with exactly one JSON object and nothing else (no markdown).",
-            "- If you need to call tools, reply with: {\"tool_calls\": [{\"tool\": \"...\", \"action\": \"...\", \"args\": {...}}]}",
+            "- If you need to call tools, reply with: {\"tool_calls\": [{\"tool\": \"...\", \"action\": \"...\", \"args\": {...}, \"call_id\": \"call_1\"}]}",
             "- Tool call args must be a JSON object with keys matching the action parameter names.",
             "- Otherwise, reply with a final object that includes at least: {\"status\": \"SUCCESS|FAILURE|BLOCKED|PARTIAL\", \"summary\": \"...\"}",
             "",

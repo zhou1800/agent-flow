@@ -72,7 +72,8 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 
 #### Tool Invocation Protocol (Worker ↔ Tools)
 - Workers may request tool calls by returning `tool_calls` in the model response:
-  - `{"tool_calls": [{"tool": "grep", "action": "search", "args": {"pattern": "...", "path": "..."}}]}`
+  - `{"tool_calls": [{"tool": "grep", "action": "search", "args": {"pattern": "...", "path": "..."}, "call_id": "call_1"}]}`
+  - `call_id` is optional but, when present, MUST be echoed back in the tool result payloads so models can correlate results.
 - A response is considered **final** when it includes `status` (SUCCESS|FAILURE|BLOCKED|PARTIAL).
 - Tool results are fed back into the worker loop as structured records; workers report:
   - `metrics.model_calls`, `metrics.tool_calls`, `metrics.elapsed_ms`, and `metrics.iteration_count`
@@ -95,7 +96,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 
 ### Trace & Loop Unrolling
 - `trace.jsonl` captures workflow state transitions plus unrolled worker loops (model calls + tool calls/results).
-- Trace events include stable identifiers when available (task_id, step_id, worker role, call_id, call_signature) and use bounded payload sizes (truncate large fields).
+- Trace events include stable identifiers when available (task_id, step_id, worker role, call_id, tool_call_id, call_signature) and use bounded payload sizes (truncate large fields).
 
 ### Model Integration
 - Abstract `LLMClient.send(messages, tools=None, response_schema=None)`.

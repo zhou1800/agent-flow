@@ -14,6 +14,7 @@ This document maps requirements to automated tests.
 - Parallel execution correctness: basic ordering, backpressure, and cancellation.
 - Tool schemas: FileTool path traversal protection, PatchTool validation, PytestTool parsing, WebTool URL validation and network policy (allowlists + domain secrets).
 - Worker tool loop: tool calls execute and are reflected in worker metrics (model/tool call counts).
+- Tool call correlation: tool calls with `call_id` are echoed into tool results and recorded in `tool_call_records`.
 - Trace loop unrolling: worker model/tool calls are recorded to `trace.jsonl` with bounded payload sizes.
 - Codex CLI prompt rendering: deterministic prompt envelope with stable tool ordering and explicit context sections.
 - Codex CLI ripgrep guard: guard on/off, guard config contents, `RIPGREP_CONFIG_PATH` override/preservation, max-columns default and disable=0.

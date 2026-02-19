@@ -17,7 +17,7 @@ def build_system_prompt(role: str) -> str:
         "",
         "Output contract:",
         '- Reply with exactly one JSON object and nothing else (no markdown).',
-        '- If you need to call tools, reply with: {"tool_calls": [{"tool": "...", "action": "...", "args": {...}}]}',
+        '- If you need to call tools, reply with: {"tool_calls": [{"tool": "...", "action": "...", "args": {...}, "call_id": "call_1"}]}',
         '- Otherwise, reply with a final object that includes at least:',
         '  {"status": "SUCCESS|FAILURE|BLOCKED|PARTIAL", "summary": "...", "artifacts": [], "metrics": {}, "next_actions": [], "failure_signature": ""}',
         "",

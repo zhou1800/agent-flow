@@ -47,6 +47,7 @@ class ProgressMetrics:
 @dataclass
 class ToolCallRecord:
     tool_name: str
+    call_id: str | None
     ok: bool
     summary: str
     data: dict[str, Any]

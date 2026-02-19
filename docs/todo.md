@@ -7,8 +7,14 @@ This document tracks prioritized follow-up work to reduce OOM risk and improve r
    - Verification: `pytest --maxfail=1 -c src/pyproject.toml src/tests` (passes); see `src/tests/test_codex_ripgrep_guard.py`, `src/llm/client.py`, and `src/tests/test_trace_unrolling.py`.
 2. [x] Relocate `runs/` to repo root (Owner: TBD)
    - Acceptance criteria: Store `runs/` as a repo-root sibling of `src/` and `docs/`, and update all setup and usage instructions accordingly.
-3. [ ] Self-improve from Codex agent loop article (Owner: TBD)
+3. [x] Self-improve from Codex agent loop article (Owner: TBD)
    - Acceptance criteria: Use Tokimon to extract improvements from https://openai.com/index/unrolling-the-codex-agent-loop/ and apply at least one validated enhancement.
+   - Extracted candidate improvements:
+     - Tool call correlation: carry `call_id` through tool calls/results (and traces/metrics) so models can match outputs to calls.
+     - Prompt-cache friendliness: keep prompts as exact-prefix extensions (stable tool ordering; avoid rewriting earlier prompt sections).
+     - Context compaction: compact long conversation histories when near limits rather than continuing to append unbounded context.
+   - Implemented: Tool call correlation (`call_id`) is recorded in `tool_call_records`, echoed in tool result payloads, and logged in trace events.
+   - Verification: `pytest --maxfail=1 -c src/pyproject.toml src/tests` (passes)
 4. [ ] Self-improve from skills shell tips article (Owner: TBD)
    - Acceptance criteria: Use Tokimon to extract improvements from https://developers.openai.com/blog/skills-shell-tips and apply at least one validated enhancement.
 5. [x] Chat UI-first interaction flow (Owner: TBD)
