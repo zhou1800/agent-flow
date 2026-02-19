@@ -37,14 +37,14 @@ This document tracks prioritized follow-up work to reduce OOM risk and improve r
 9. [x] Self-improve entry-point request handling loop (Owner: TBD)
    - Acceptance criteria: For Tokimon entry-point tasks, enforce this flow: (1) understand the user's request and ask clarifying questions immediately if it is unclear or ambiguous, (2) once the request is clear move to step 3, (3) generate a prompt, (4) run the agent with the prompt, (5) monitor and report progress, and (6) verify the final outcome; if step 6 fails, restart from step 3.
    - Verification: `pytest --maxfail=1 -c src/pyproject.toml src/tests` (passes); see `src/tests/test_self_improve_entrypoint_loop.py` and `src/self_improve/orchestrator.py`.
-10. [ ] Schema-driven structured outputs (Owner: TBD)
-   - Acceptance criteria: Define a per-step "success schema" and enforce schema-valid structured results (not just valid JSON), with bounded repair on validation failures.
-11. [ ] Persist and render structured results + UI blocks (Owner: TBD)
-   - Acceptance criteria: Persist the full structured step result (including any UI blocks) as first-class run artifacts/outputs, and render them in the chat UI rather than only printing a text summary.
-12. [ ] Observability-ready metrics and dashboards (Owner: TBD)
-   - Acceptance criteria: Standardize a small set of run/step metrics (with types and units) and produce an importable dashboard artifact so Tokimon runs are measurable and easy to visualize.
-13. [ ] Non-trivial upgrade: move chat UI to React + Tambo (Owner: TBD)
-   - Acceptance criteria: Migrate the chat UI to a React frontend using Tambo to render Tokimon UI blocks (charts/forms/panels), add the required JS build+serve workflow, and keep `/healthz` and `/api/send` stable.
-14. [x] Tokimon constitution enforcement (Owner: TBD)
+10. [x] Tokimon constitution enforcement (Owner: TBD)
    - Acceptance criteria: Add binding constitution doc, enforce entry-point prompt and report headings, deterministic tie-breaker, and energy budget reporting for self-improve.
    - Verification: `pytest --maxfail=1 -c src/pyproject.toml src/tests` (passes); see `docs/tokimon-constitution.md`, `src/self_improve/orchestrator.py`, and `src/tests/test_self_improve_constitution.py`.
+11. [ ] Schema-driven structured outputs (Owner: TBD)
+   - Acceptance criteria: Define a per-step "success schema" and enforce schema-valid structured results (not just valid JSON), with bounded repair on validation failures.
+12. [ ] Persist and render structured results + UI blocks (Owner: TBD)
+   - Acceptance criteria: Persist the full structured step result (including any UI blocks) as first-class run artifacts/outputs, and render them in the chat UI rather than only printing a text summary.
+13. [ ] Observability-ready metrics and dashboards (Owner: TBD)
+   - Acceptance criteria: Standardize a small set of run/step metrics (with types and units) and produce an importable dashboard artifact so Tokimon runs are measurable and easy to visualize.
+14. [ ] Non-trivial upgrade: move chat UI to React + Tambo (Owner: TBD)
+   - Acceptance criteria: Migrate the chat UI to a React frontend using Tambo to render Tokimon UI blocks (charts/forms/panels), add the required JS build+serve workflow, and keep `/healthz` and `/api/send` stable.
