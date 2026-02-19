@@ -35,6 +35,28 @@ from .workspace import purge_bytecode_for_changes
 from .workspace import squash_merge_commit
 from .workspace import resolve_unmerged_paths
 
+CONSTITUTION_PATH = "docs/tokimon-constitution.md"
+CONSTITUTION_ACK = (
+    "Constitution Acknowledgement: This session is bound by the Tokimon Constitution "
+    f"({CONSTITUTION_PATH}) and must comply with its immutable invariants, governance rules, "
+    "and evaluation requirements."
+)
+IMMUTABLE_INVARIANTS = [
+    "Self-improve runs optimize for measurable capability growth under explicit evaluation.",
+    "All self-improve decisions must be auditable, reproducible, and deterministic.",
+    "Rollback safety is mandatory: do not merge or persist changes when verification fails.",
+    "The system must honor stop capability signals and terminate safely without continuing work.",
+    "Energy is defined as `energy = model_calls + tool_calls` and must be reported as planned vs actual.",
+]
+SCORING_RUBRIC = [
+    "Verification outcome (pass=1, fail=0)",
+    "Evaluation outcome (ok=1, fail=0)",
+    "Workflow outcome (success=1, otherwise=0)",
+    "Concrete changes produced (yes=1, no=0)",
+    "Passed test count (higher is better)",
+    "Energy efficiency (lower energy is better)",
+]
+
 
 @dataclass(frozen=True)
 class SelfImproveSettings:
@@ -160,7 +182,7 @@ class SelfImproveOrchestrator:
                 )
             for fut in concurrent.futures.as_completed(futures):
                 session_results.append(fut.result())
-        session_results.sort(key=lambda r: r.score, reverse=True)
+        session_results = _rank_sessions(session_results)
         winner = session_results[0] if session_results else None
         merged = False
         master_eval = None
@@ -202,6 +224,7 @@ class SelfImproveOrchestrator:
         clarifying_questions = _clarifying_questions_for_goal(goal)
         attempts: list[dict[str, Any]] = []
         entrypoint_max_attempts = max(1, int(self.settings.entrypoint_max_attempts))
+        planned_energy = _planned_energy_budget(1, entrypoint_max_attempts)
 
         session_report: dict[str, Any] = {
             "session_id": session_id,
@@ -286,6 +309,7 @@ class SelfImproveOrchestrator:
                 input_payload,
                 baseline_master_eval,
                 self.settings.pytest_args,
+                planned_energy,
                 attempt_index=attempt_index,
                 retry_reason=retry_reason,
             )
@@ -561,12 +585,22 @@ def _entrypoint_prompt(
     input_payload: InputPayload,
     baseline_master_eval: EvaluationResult,
     pytest_args: list[str],
+    planned_energy: int,
     *,
     attempt_index: int,
     retry_reason: str | None,
 ) -> str:
     strategy = _strategy_hint(session_id)
     parts = [
+        CONSTITUTION_ACK,
+        "",
+        "Immutable Invariants:",
+        *[f"- {item}" for item in IMMUTABLE_INVARIANTS],
+        "",
+        "## Evaluation Plan (Required)",
+        f"- Planned energy budget (this session): {planned_energy}",
+        "- Actual energy must be reported as model_calls + tool_calls.",
+        "",
         "Self-improve entry-point task.",
         "",
         "Execution flow (must be followed in order):",
@@ -659,6 +693,43 @@ def _score(
     return (verified, ok, workflow, has_changes, passed, -failed - tool_calls - model_calls)
 
 
+def _planned_energy_budget(sessions: int, max_attempts: int) -> int:
+    total_sessions = max(0, int(sessions))
+    attempts = max(1, int(max_attempts))
+    return total_sessions * attempts * 2
+
+
+def _planned_energy_from_settings(settings: dict[str, Any]) -> int:
+    sessions_per_batch = int(settings.get("sessions_per_batch") or 0)
+    batches = int(settings.get("batches") or 0)
+    entrypoint_max_attempts = int(settings.get("entrypoint_max_attempts") or 1)
+    return _planned_energy_budget(sessions_per_batch * batches, entrypoint_max_attempts)
+
+
+def _actual_energy(report: SelfImproveReport) -> int:
+    total = 0
+    for batch in report.batches:
+        for session in batch.sessions:
+            total += int(session.model_calls) + int(session.tool_calls)
+    return total
+
+
+def _rank_sessions(sessions: list[SelfImproveSessionResult]) -> list[SelfImproveSessionResult]:
+    return sorted(sessions, key=_session_sort_key)
+
+
+def _session_sort_key(session: SelfImproveSessionResult) -> tuple[int, int, int, int, int, int, str]:
+    return (
+        -int(session.score[0]),
+        -int(session.score[1]),
+        -int(session.score[2]),
+        -int(session.score[3]),
+        -int(session.score[4]),
+        -int(session.score[5]),
+        session.session_id,
+    )
+
+
 def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
     return {
         "status": "COMPLETED",
@@ -702,6 +773,8 @@ def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
 
 
 def _report_to_markdown(report: SelfImproveReport) -> str:
+    planned_energy = _planned_energy_from_settings(report.settings)
+    actual_energy = _actual_energy(report)
     lines = [
         "# Tokimon Self-Improve Report",
         "",
@@ -711,9 +784,43 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
         "",
         f"Input: {report.input_payload.kind} {report.input_payload.ref or ''}".strip(),
         "",
-        "## Batches",
+        "## Constitution Acknowledgement",
         "",
+        CONSTITUTION_ACK,
+        "",
+        "## Scoring Rubric",
+        "",
+        *[f"- {item}" for item in SCORING_RUBRIC],
+        "",
+        "Tie-breaker: lowest session_id (lexicographic) when scores tie.",
+        "",
+        "## Energy Budget",
+        "",
+        f"Planned energy: {planned_energy}",
+        f"Actual energy: {actual_energy} (sum of model_calls + tool_calls across all sessions)",
+        "",
+        "## Audit Log",
+        "",
+        "Audit entries (per session):",
+        "",
+        "| Batch | Session | Verified | Workflow | Model Calls | Tool Calls | Energy | Changed Files |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
+    for batch in report.batches:
+        for session in batch.sessions:
+            energy = int(session.model_calls) + int(session.tool_calls)
+            lines.append(
+                f"| {batch.batch_index} | {session.session_id} | {session.verification_ok} | "
+                f"{session.workflow_status or ''} | {session.model_calls} | {session.tool_calls} | "
+                f"{energy} | {len(session.changed_files)} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Batches",
+            "",
+        ]
+    )
     for batch in report.batches:
         lines.append(f"### Batch {batch.batch_index}")
         lines.append("")

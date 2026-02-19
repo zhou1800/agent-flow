@@ -171,6 +171,13 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Verify the outcome using workflow status plus evaluation checks.
   - If verification fails, restart from prompt generation (retry loop) until success or attempt budget is exhausted.
 
+#### Constitution Enforcement
+- The Tokimon Constitution at `docs/tokimon-constitution.md` is binding for all self-improve runs.
+- `src/self_improve/orchestrator.py:_entrypoint_prompt` must begin with a 1-paragraph Constitution Acknowledgement, then list the Immutable Invariants, and include the exact heading `## Evaluation Plan (Required)`.
+- Winner selection is deterministic and does not depend on completion order; if scores tie, the winner is the lowest `session_id` (lexicographic).
+- `src/self_improve/orchestrator.py:_report_to_markdown` must include the headings `## Constitution Acknowledgement`, `## Scoring Rubric`, `## Energy Budget`, and `## Audit Log`.
+- Energy budget reporting must include planned vs actual energy; actual energy is the sum of `(model_calls + tool_calls)` across all sessions in the report.
+
 ## Repository Layout
 - Tokimon project root lives under `src/` in this repository.
 - Python sources live directly under `src/` (e.g., `cli.py`, `agents/`, `workflow/`).

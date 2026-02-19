@@ -18,6 +18,10 @@ This document maps requirements to automated tests.
 - Codex CLI prompt rendering: deterministic prompt envelope with stable tool ordering and explicit context sections.
 - Codex CLI ripgrep guard: guard on/off, guard config contents, `RIPGREP_CONFIG_PATH` override/preservation, max-columns default and disable=0.
 - Codex CLI delegation markers: subprocess env includes `TOKIMON_DELEGATED=1`, increments `TOKIMON_DELEGATION_DEPTH`, and prompt context reflects delegation depth.
+- Constitution doc exists and includes required headings (see `src/tests/test_self_improve_constitution.py`).
+- Entry-point prompt includes Constitution Acknowledgement, Immutable Invariants, and `## Evaluation Plan (Required)` (see `src/tests/test_self_improve_constitution.py`).
+- Winner selection tie-breaker uses lowest `session_id` when scores tie (see `src/tests/test_self_improve_constitution.py`).
+- Report markdown includes constitution headings and planned vs actual energy with correct actual sum (see `src/tests/test_self_improve_constitution.py`).
 
 ## Integration Tests
 - End-to-end run of at least two benchmark tasks using the mock model:
