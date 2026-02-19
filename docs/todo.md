@@ -37,5 +37,5 @@ This document tracks prioritized follow-up work to reduce OOM risk and improve r
    - Acceptance criteria: Standardize a small set of run/step metrics (with types and units) and produce an importable dashboard artifact so Tokimon runs are measurable and easy to visualize.
 13. [ ] Non-trivial upgrade: move chat UI to React + Tambo (Owner: TBD)
    - Acceptance criteria: Migrate the chat UI to a React frontend using Tambo to render Tokimon UI blocks (charts/forms/panels), add the required JS build+serve workflow, and keep `/healthz` and `/api/send` stable.
-14. [ ] Tokimon constitution enforcement (Owner: TBD)
+14. [x] Tokimon constitution enforcement (Owner: TBD)
    - Acceptance criteria: Add binding constitution doc, enforce entry-point prompt and report headings, deterministic tie-breaker, and energy budget reporting for self-improve.
