@@ -130,17 +130,26 @@ class MemoryStore:
         tags = tags or []
         conn = sqlite3.connect(self.index_path)
         try:
-            rows = []
-            if stage == 1:
-                rows = _search(conn, query, tags=tags, component=component, failure_signature=failure_signature, limit=limit)
-            elif stage == 2:
-                rows = _search(conn, query, tags=tags, component=component, failure_signature=failure_signature, limit=limit)
+            rows = _search(conn, query, tags=tags, component=component, failure_signature=failure_signature, limit=limit)
+            if stage == 2:
                 if len(rows) < limit and tags:
-                    rows += _search(conn, " ".join(tags), tags=tags, component=component, failure_signature=failure_signature, limit=limit - len(rows))
-            else:
-                rows = _search(conn, query, tags=tags, component=component, failure_signature=failure_signature, limit=limit)
-                if len(rows) < limit and failure_signature:
-                    rows += _search(conn, failure_signature, tags=tags, component=component, failure_signature=failure_signature, limit=limit - len(rows))
+                    rows += _search(
+                        conn,
+                        " ".join(tags),
+                        tags=tags,
+                        component=component,
+                        failure_signature=failure_signature,
+                        limit=limit - len(rows),
+                    )
+            elif stage != 1 and len(rows) < limit and failure_signature:
+                rows += _search(
+                    conn,
+                    failure_signature,
+                    tags=tags,
+                    component=component,
+                    failure_signature=failure_signature,
+                    limit=limit - len(rows),
+                )
             lessons = []
             seen = set()
             for row in rows:
