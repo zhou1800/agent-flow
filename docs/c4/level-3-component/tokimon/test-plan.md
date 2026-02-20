@@ -12,6 +12,9 @@ This document maps requirements to automated tests.
 - Memory staged retrieval: Stage 1/2/3 selection logic with deterministic lexical index.
 - Dynamic skill registration: register only after tests pass; hot reload behavior.
 - Parallel execution correctness: basic ordering, backpressure, and cancellation.
+- CLI auto routing: `tokimon auto "<prompt>"` uses an LLM router to produce a validated argv list (tests stub the router/LLM for determinism and cover fallback to heuristic routing) (see `src/tests/test_cli_auto.py`).
+- CLI help surface: default `--help` output hides advanced flags while still accepting them (see `src/tests/test_cli_auto.py`).
+- Self-improve CLI LLM default: `--llm` defaults to `$TOKIMON_LLM` when set, else `mixed` (see `src/tests/test_cli_auto.py`).
 - Tool schemas: FileTool path traversal protection, PatchTool validation, PytestTool parsing, GrepTool bounded output + default excludes, WebTool URL validation and network policy (allowlists + domain secrets).
 - Worker tool loop: tool calls execute and are reflected in worker metrics (model/tool call counts).
 - Tool call correlation: tool calls with `call_id` are echoed into tool results and recorded in `tool_call_records`.

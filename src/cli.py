@@ -5,13 +5,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
 
 from chat_ui.server import ChatUIConfig, run_chat_ui
 from benchmarks.harness import EvaluationHarness
-from llm.client import ClaudeCLIClient, ClaudeCLISettings, CodexCLIClient, CodexCLISettings, MockLLMClient, build_llm_client
+from llm.client import (
+    ClaudeCLIClient,
+    ClaudeCLISettings,
+    CodexCLIClient,
+    CodexCLISettings,
+    LLMClient,
+    MockLLMClient,
+    build_llm_client,
+)
 from memory.store import MemoryStore
 from runners.baseline import BaselineRunner
 from runners.hierarchical import HierarchicalRunner
@@ -22,13 +31,16 @@ from skills.registry import SkillRegistry
 from skills.spec import SkillSpec
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="tokimon")
+def build_parser(*, exit_on_error: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="tokimon", exit_on_error=exit_on_error)
     subparsers = parser.add_subparsers(dest="command")
+
+    auto = subparsers.add_parser("auto")
+    auto.add_argument("prompt")
 
     run_task = subparsers.add_parser("run-task")
     run_task.add_argument("--task-id", required=True)
-    run_task.add_argument("--runner", choices=["baseline", "hierarchical"], default="hierarchical")
+    run_task.add_argument("--runner", choices=["baseline", "hierarchical"], default="hierarchical", help=argparse.SUPPRESS)
 
     subparsers.add_parser("run-suite")
 
@@ -50,27 +62,27 @@ def build_parser() -> argparse.ArgumentParser:
     self_improve = subparsers.add_parser("self-improve")
     self_improve.add_argument("--goal", default="Improve tokimon based on docs and failing tests.")
     self_improve.add_argument("--input", default=None)
-    self_improve.add_argument("--sessions", type=int, default=5)
-    self_improve.add_argument("--batches", type=int, default=1)
-    self_improve.add_argument("--workers", type=int, default=4)
-    self_improve.add_argument("--no-merge", action="store_true")
+    self_improve.add_argument("--sessions", type=int, default=5, help=argparse.SUPPRESS)
+    self_improve.add_argument("--batches", type=int, default=1, help=argparse.SUPPRESS)
+    self_improve.add_argument("--workers", type=int, default=4, help=argparse.SUPPRESS)
+    self_improve.add_argument("--no-merge", action="store_true", help=argparse.SUPPRESS)
     self_improve.add_argument(
         "--llm",
         choices=["mock", "codex", "claude", "mixed"],
-        default=os.environ.get("TOKIMON_LLM", "mock"),
-        help="LLM provider to use for self-improve sessions (or set TOKIMON_LLM); mixed enforces claude:codex=1:4 and requires --sessions multiple of 5.",
+        default=os.environ.get("TOKIMON_LLM", "mixed"),
+        help=argparse.SUPPRESS,
     )
 
     chat_ui = subparsers.add_parser("chat-ui")
-    chat_ui.add_argument("--host", default="127.0.0.1")
+    chat_ui.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
     chat_ui.add_argument("--port", type=int, default=8765)
     chat_ui.add_argument(
         "--llm",
         choices=["mock", "codex", "claude"],
         default=os.environ.get("TOKIMON_LLM", "mock"),
-        help="LLM provider to use for chat-ui (or set TOKIMON_LLM).",
+        help=argparse.SUPPRESS,
     )
-    chat_ui.add_argument("--workspace", default=None, help="Workspace directory (default: current working directory).")
+    chat_ui.add_argument("--workspace", default=None, help=argparse.SUPPRESS)
 
     return parser
 
@@ -81,6 +93,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         parser.print_help()
         return 0
+
+    if args.command == "auto":
+        routed_argv = _auto_decide_argv(str(args.prompt))
+        if not routed_argv:
+            parser.print_help()
+            return 0
+        return main(routed_argv)
+
     repo_root = Path(__file__).resolve().parent
     workspace_root = repo_root.parent
     runs_root = workspace_root / "runs"
@@ -224,6 +244,176 @@ def _find_task_dir(repo_root: Path, task_id: str) -> Path | None:
         if spec.get("id") == task_id:
             return task_dir
     return None
+
+
+_AUTO_ALLOWED_COMMANDS: frozenset[str] = frozenset({"run-suite", "list-skills", "run-task", "self-improve"})
+
+
+def _auto_decide_argv(prompt: str, *, llm_client: LLMClient | None = None) -> list[str]:
+    """Convert a free-form prompt into a concrete CLI argv list.
+
+    Primary behavior: use an AI router to select an argv list.
+    Fallback: deterministic heuristic routing when the router fails.
+    """
+
+    normalized = prompt.strip()
+    if not normalized:
+        return []
+
+    routed = _auto_route_with_llm(normalized, llm_client=llm_client)
+    if routed:
+        return routed
+
+    return _auto_route_heuristic(normalized)
+
+
+def _auto_route_with_llm(prompt: str, *, llm_client: LLMClient | None) -> list[str] | None:
+    normalized = prompt.strip()
+    if not normalized:
+        return None
+
+    client = llm_client or _build_auto_router_client(Path.cwd().resolve())
+    messages = [
+        {
+            "role": "system",
+            "content": "\n".join(
+                [
+                    "You are Tokimon's CLI router.",
+                    "Given a user prompt, choose exactly one Tokimon subcommand to run.",
+                    "",
+                    "Allowed commands (argv[0]): run-suite, list-skills, run-task, self-improve.",
+                    "Return JSON with: {\"status\":\"SUCCESS\",\"argv\":[...]} and nothing else.",
+                    "Rules:",
+                    "- argv excludes the leading 'tokimon'.",
+                    "- Use minimal argv; prefer self-improve for learning/improving prompts.",
+                    "- run-task MUST include: --task-id <id>.",
+                    "- Do NOT return 'auto' and do NOT include -h/--help.",
+                    "- Do NOT request tool calls.",
+                    "",
+                    "Examples:",
+                    "Prompt: run suite -> {\"status\":\"SUCCESS\",\"argv\":[\"run-suite\"]}",
+                    "Prompt: list skills -> {\"status\":\"SUCCESS\",\"argv\":[\"list-skills\"]}",
+                    "Prompt: run task demo-1 -> {\"status\":\"SUCCESS\",\"argv\":[\"run-task\",\"--task-id\",\"demo-1\"]}",
+                    "Prompt: please learn X -> {\"status\":\"SUCCESS\",\"argv\":[\"self-improve\",\"--goal\",\"please learn X\"]}",
+                ]
+            ),
+        },
+        {"role": "user", "content": normalized},
+    ]
+
+    try:
+        response = client.send(messages, tools=None)
+    except Exception:
+        return None
+    argv = _extract_routed_argv(response)
+    if argv is None:
+        return None
+    if not _validate_routed_argv(argv):
+        return None
+    return argv
+
+
+def _extract_routed_argv(response: object) -> list[str] | None:
+    if not isinstance(response, dict):
+        return None
+    raw = response.get("argv")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        candidate: list[object] = [raw]
+    elif isinstance(raw, list):
+        candidate = raw
+    else:
+        return None
+
+    argv: list[str] = []
+    for item in candidate:
+        if not isinstance(item, str):
+            return None
+        stripped = item.strip()
+        if not stripped:
+            continue
+        argv.append(stripped)
+    if not argv:
+        return None
+    return argv
+
+
+def _validate_routed_argv(argv: list[str]) -> bool:
+    if argv[0] not in _AUTO_ALLOWED_COMMANDS:
+        return False
+    if any(arg in {"-h", "--help"} for arg in argv):
+        return False
+
+    parser = build_parser(exit_on_error=False)
+    try:
+        parsed = parser.parse_args(argv)
+    except (argparse.ArgumentError, ValueError):
+        return False
+    except SystemExit:
+        return False
+    if getattr(parsed, "command", None) != argv[0]:
+        return False
+    return True
+
+
+def _auto_router_provider() -> str:
+    provider = (os.environ.get("TOKIMON_LLM") or "").strip().lower()
+    if provider in {"codex", "codex-cli"}:
+        return "codex"
+    if provider in {"claude", "claude-cli"}:
+        return "claude"
+    if provider in {"mock"}:
+        return "mock"
+    if provider in {"mixed"}:
+        return "codex"
+    return "codex"
+
+
+def _build_auto_router_client(workspace_dir: Path) -> LLMClient:
+    provider = _auto_router_provider()
+    if provider == "codex":
+        codex_settings = replace(
+            CodexCLISettings.from_env(),
+            sandbox="read-only",
+            ask_for_approval="never",
+            search=False,
+            timeout_s=60,
+        )
+        return CodexCLIClient(workspace_dir, settings=codex_settings)
+    if provider == "claude":
+        claude_settings = replace(ClaudeCLISettings.from_env(), timeout_s=60)
+        return ClaudeCLIClient(workspace_dir, settings=claude_settings)
+    if provider == "mock":
+        return MockLLMClient(script=[])
+    try:
+        return build_llm_client(provider, workspace_dir=workspace_dir)
+    except Exception:
+        return MockLLMClient(script=[])
+
+
+def _auto_route_heuristic(prompt: str) -> list[str]:
+    normalized = prompt.strip()
+    if not normalized:
+        return []
+
+    lower = normalized.lower()
+
+    if lower in {"run-suite", "suite"} or "run suite" in lower:
+        return ["run-suite"]
+
+    if lower in {"list-skills", "skills"} or "list skills" in lower:
+        return ["list-skills"]
+
+    task_match = re.search(
+        r"(?:^|\b)(?:run\s+task\s+|task\s*[:=]\s*|task-id\s*[:=]\s*)([A-Za-z0-9_.-]+)(?:\b|$)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if task_match:
+        return ["run-task", "--task-id", task_match.group(1)]
+
+    return ["self-improve", "--goal", normalized]
 
 
 if __name__ == "__main__":

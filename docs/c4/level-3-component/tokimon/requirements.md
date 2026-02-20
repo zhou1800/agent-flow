@@ -128,7 +128,12 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Metrics include at least: pass/fail counts, wall time, model calls, tool calls, and Lessons produced.
 
 ### CLI
-- Commands: run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui.
+- Commands: auto, run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui.
+- Prompt-driven entrypoint: `tokimon auto "<prompt>"` routes to the appropriate mode by asking an AI router (Codex/Claude) to return a concrete Tokimon argv list.
+  - Output contract: the router returns JSON containing `argv: string[]` (argv excludes the leading `tokimon`).
+  - Validation: Tokimon MUST validate the router argv against the CLI parser (unknown commands/options are rejected) and MUST prevent `auto` recursion.
+  - Fallback: if the router fails (missing CLI, timeout, invalid JSON, invalid argv), Tokimon falls back to deterministic heuristic routing; prompts that ask to learn/improve route to `tokimon self-improve`.
+- Default `--help` output minimizes option surface by hiding advanced flags while still accepting them for power users.
 - CLI outputs are structured and point to run artifacts.
 
 ### Chat UI
@@ -143,6 +148,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - URL (http/https), local file path, or inline text (or none).
 - If `--input` is not provided, the system may auto-detect URL(s) embedded in the `--goal` text and fetch at least the first URL as the session input payload (bounded by byte/time limits and the WebTool network policy).
 - The system runs a batch of N independent improvement sessions in parallel.
+- Self-improve CLI LLM default: `--llm` defaults to `$TOKIMON_LLM` when set; otherwise it defaults to `mixed`.
 - Mixed-provider mode: when `--llm mixed`, enforce a deterministic `claude:codex=1:4` session mix by assigning Claude to session indices 1, 6, 11, ... (i.e., `(index - 1) % 5 == 0`) and Codex to the other sessions. `--sessions` MUST be a multiple of 5 (default: 5).
 - Before launching each batch, the system runs an evaluation on the current master workspace (pytest by default) and passes a compact summary (pass/fail counts + failing test ids) into every session as context.
 - Each session:
