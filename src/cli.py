@@ -6,9 +6,12 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
+import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import TextIO
 
 from chat_ui.server import ChatUIConfig, run_chat_ui
 from benchmarks.harness import EvaluationHarness
@@ -94,140 +97,176 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    if args.command == "auto":
-        routed_argv = _auto_decide_argv(str(args.prompt))
-        if not routed_argv:
-            parser.print_help()
-            return 0
-        return main(routed_argv)
-
     repo_root = Path(__file__).resolve().parent
     workspace_root = repo_root.parent
     runs_root = workspace_root / "runs"
     llm_client = MockLLMClient(script=[])
 
-    if args.command == "run-task":
-        task_dir = _find_task_dir(repo_root, args.task_id)
-        if task_dir is None:
-            raise SystemExit(f"Unknown task: {args.task_id}")
-        spec_path = task_dir / "task.json"
-        spec = json.loads(spec_path.read_text())
-        workspace = runs_root / "workspaces" / args.task_id / args.runner
-        if workspace.exists():
-            shutil.rmtree(workspace)
-        shutil.copytree(task_dir / "starter", workspace)
-        tests_dst = workspace / "tests"
-        shutil.copytree(task_dir / "tests", tests_dst)
-        test_args = [str(tests_dst)]
-        if args.runner == "baseline":
-            runner = BaselineRunner(workspace, llm_client, base_dir=runs_root)
-            runner.run(spec.get("description", ""), task_id=args.task_id, test_args=test_args)
-        else:
-            runner = HierarchicalRunner(workspace, llm_client, base_dir=runs_root)
-            runner.run(spec.get("description", ""), task_steps=None, task_id=args.task_id, test_args=test_args)
-        return 0
-
-    if args.command == "run-suite":
-        harness = EvaluationHarness(repo_root, runs_dir=runs_root)
-        harness.run_suite()
-        return 0
-
-    if args.command == "resume-run":
-        run_path = Path(args.run_path)
-        workflow_state = run_path / "workflow_state.json"
-        if not workflow_state.exists():
-            raise SystemExit("workflow_state.json not found")
-        runner = HierarchicalRunner(repo_root, llm_client, base_dir=runs_root)
-        runner.resume(run_path)
-        return 0
-
-    if args.command == "inspect-run":
-        run_path = Path(args.run_path)
-        run_manifest = run_path / "run.json"
-        workflow_state = run_path / "workflow_state.json"
-        if run_manifest.exists():
-            print(run_manifest.read_text())
-        if workflow_state.exists():
-            print(workflow_state.read_text())
-        return 0
-
-    if args.command == "list-skills":
-        registry = SkillRegistry(repo_root)
-        registry.load()
-        for spec in registry.list_skills():
-            print(f"{spec.name}: {spec.purpose}")
-        return 0
-
-    if args.command == "build-skill":
-        tools = [t.strip() for t in args.tools.split(",") if t.strip()]
-        spec = SkillSpec(
-            name=args.name,
-            purpose=args.purpose,
-            contract=args.contract,
-            required_tools=tools,
-            retrieval_prefs={"stage1": "tight", "stage2": "broaden", "stage3": "targeted"},
-        )
-        builder = SkillBuilder(repo_root, MemoryStore(repo_root / "memory"))
-        ok = builder.build_skill(spec, args.justification)
-        return 0 if ok else 1
-
-    if args.command == "self-improve":
-        master_root = Path.cwd().resolve()
-        settings = SelfImproveSettings(
-            sessions_per_batch=args.sessions,
-            batches=args.batches,
-            max_workers=args.workers,
-            merge_on_success=not args.no_merge,
-        )
-        llm_provider = str(args.llm or "mock").strip().lower()
-        if llm_provider == "mixed":
-            validate_mixed_sessions_per_batch(int(args.sessions))
-
-        def llm_factory(_session_id: str, workspace_dir: Path):
-            session_provider = llm_provider
-            if llm_provider == "mixed":
-                session_provider = mixed_provider_for_session(_session_id)
-
-            if session_provider in {"codex", "codex-cli"}:
-                codex_settings = CodexCLISettings.from_env()
-                if "TOKIMON_CODEX_SANDBOX" not in os.environ:
-                    codex_settings = replace(codex_settings, sandbox="workspace-write")
-                if "TOKIMON_CODEX_APPROVAL" not in os.environ:
-                    codex_settings = replace(codex_settings, ask_for_approval="never")
-                if "TOKIMON_CODEX_SEARCH" not in os.environ:
-                    codex_settings = replace(codex_settings, search=True)
-                if "TOKIMON_CODEX_TIMEOUT_S" not in os.environ:
-                    codex_settings = replace(codex_settings, timeout_s=240)
-                return CodexCLIClient(workspace_dir, settings=codex_settings)
-
-            if session_provider in {"claude", "claude-cli"}:
-                claude_settings = ClaudeCLISettings.from_env()
-                if "TOKIMON_CLAUDE_TIMEOUT_S" not in os.environ:
-                    claude_settings = replace(claude_settings, timeout_s=240)
-                return ClaudeCLIClient(workspace_dir, settings=claude_settings)
-
-            return build_llm_client(session_provider, workspace_dir=workspace_dir)
-
-        orchestrator = SelfImproveOrchestrator(master_root, llm_factory=llm_factory, settings=settings)
-        try:
-            report = orchestrator.run(args.goal, input_ref=args.input)
-        except RuntimeError as exc:
-            raise SystemExit(str(exc)) from exc
-        print(json.dumps({"run_root": report.run_root}, indent=2))
-        return 0
-
-    if args.command == "chat-ui":
-        workspace_dir = Path(args.workspace).resolve() if args.workspace else Path.cwd().resolve()
-        config = ChatUIConfig(
-            host=str(args.host),
-            port=int(args.port),
-            llm_provider=str(args.llm),
-            workspace_dir=workspace_dir,
-        )
-        run_chat_ui(config)
-        return 0
+    match args.command:
+        case "auto":
+            return _cmd_auto(parser, str(args.prompt))
+        case "run-task":
+            return _cmd_run_task(args, repo_root, runs_root, llm_client)
+        case "run-suite":
+            return _cmd_run_suite(repo_root, runs_root)
+        case "resume-run":
+            return _cmd_resume_run(args, repo_root, runs_root, llm_client)
+        case "inspect-run":
+            return _cmd_inspect_run(args)
+        case "list-skills":
+            return _cmd_list_skills(repo_root)
+        case "build-skill":
+            return _cmd_build_skill(args, repo_root)
+        case "self-improve":
+            return _cmd_self_improve(args)
+        case "chat-ui":
+            return _cmd_chat_ui(args)
+        case _:
+            return 1
 
     return 1
+
+
+def _cmd_auto(parser: argparse.ArgumentParser, prompt: str) -> int:
+    routed_argv = _auto_decide_argv(prompt)
+    if not routed_argv:
+        parser.print_help()
+        return 0
+    return main(routed_argv)
+
+
+def _cmd_run_task(args: argparse.Namespace, repo_root: Path, runs_root: Path, llm_client: LLMClient) -> int:
+    task_dir = _find_task_dir(repo_root, args.task_id)
+    if task_dir is None:
+        raise SystemExit(f"Unknown task: {args.task_id}")
+    spec_path = task_dir / "task.json"
+    spec = json.loads(spec_path.read_text())
+    workspace = runs_root / "workspaces" / args.task_id / args.runner
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    shutil.copytree(task_dir / "starter", workspace)
+    tests_dst = workspace / "tests"
+    shutil.copytree(task_dir / "tests", tests_dst)
+    test_args = [str(tests_dst)]
+    if args.runner == "baseline":
+        runner = BaselineRunner(workspace, llm_client, base_dir=runs_root)
+        runner.run(spec.get("description", ""), task_id=args.task_id, test_args=test_args)
+    else:
+        runner = HierarchicalRunner(workspace, llm_client, base_dir=runs_root)
+        runner.run(spec.get("description", ""), task_steps=None, task_id=args.task_id, test_args=test_args)
+    return 0
+
+
+def _cmd_run_suite(repo_root: Path, runs_root: Path) -> int:
+    harness = EvaluationHarness(repo_root, runs_dir=runs_root)
+    harness.run_suite()
+    return 0
+
+
+def _cmd_resume_run(args: argparse.Namespace, repo_root: Path, runs_root: Path, llm_client: LLMClient) -> int:
+    run_path = Path(args.run_path)
+    workflow_state = run_path / "workflow_state.json"
+    if not workflow_state.exists():
+        raise SystemExit("workflow_state.json not found")
+    runner = HierarchicalRunner(repo_root, llm_client, base_dir=runs_root)
+    runner.resume(run_path)
+    return 0
+
+
+def _cmd_inspect_run(args: argparse.Namespace) -> int:
+    run_path = Path(args.run_path)
+    run_manifest = run_path / "run.json"
+    workflow_state = run_path / "workflow_state.json"
+    if run_manifest.exists():
+        _write_line(sys.stdout, run_manifest.read_text())
+    if workflow_state.exists():
+        _write_line(sys.stdout, workflow_state.read_text())
+    return 0
+
+
+def _cmd_list_skills(repo_root: Path) -> int:
+    registry = SkillRegistry(repo_root)
+    registry.load()
+    for spec in registry.list_skills():
+        _write_line(sys.stdout, f"{spec.name}: {spec.purpose}")
+    return 0
+
+
+def _cmd_build_skill(args: argparse.Namespace, repo_root: Path) -> int:
+    tools = [t.strip() for t in args.tools.split(",") if t.strip()]
+    spec = SkillSpec(
+        name=args.name,
+        purpose=args.purpose,
+        contract=args.contract,
+        required_tools=tools,
+        retrieval_prefs={"stage1": "tight", "stage2": "broaden", "stage3": "targeted"},
+    )
+    builder = SkillBuilder(repo_root, MemoryStore(repo_root / "memory"))
+    ok = builder.build_skill(spec, args.justification)
+    return 0 if ok else 1
+
+
+def _cmd_self_improve(args: argparse.Namespace) -> int:
+    master_root = Path.cwd().resolve()
+    settings = SelfImproveSettings(
+        sessions_per_batch=args.sessions,
+        batches=args.batches,
+        max_workers=args.workers,
+        merge_on_success=not args.no_merge,
+    )
+    llm_provider = str(args.llm or "mock").strip().lower()
+    if llm_provider == "mixed":
+        validate_mixed_sessions_per_batch(int(args.sessions))
+
+    def llm_factory(_session_id: str, workspace_dir: Path):
+        session_provider = llm_provider
+        if llm_provider == "mixed":
+            session_provider = mixed_provider_for_session(_session_id)
+
+        if session_provider in {"codex", "codex-cli"}:
+            codex_settings = CodexCLISettings.from_env()
+            if "TOKIMON_CODEX_SANDBOX" not in os.environ:
+                codex_settings = replace(codex_settings, sandbox="workspace-write")
+            if "TOKIMON_CODEX_APPROVAL" not in os.environ:
+                codex_settings = replace(codex_settings, ask_for_approval="never")
+            if "TOKIMON_CODEX_SEARCH" not in os.environ:
+                codex_settings = replace(codex_settings, search=True)
+            if "TOKIMON_CODEX_TIMEOUT_S" not in os.environ:
+                codex_settings = replace(codex_settings, timeout_s=240)
+            return CodexCLIClient(workspace_dir, settings=codex_settings)
+
+        if session_provider in {"claude", "claude-cli"}:
+            claude_settings = ClaudeCLISettings.from_env()
+            if "TOKIMON_CLAUDE_TIMEOUT_S" not in os.environ:
+                claude_settings = replace(claude_settings, timeout_s=240)
+            return ClaudeCLIClient(workspace_dir, settings=claude_settings)
+
+        return build_llm_client(session_provider, workspace_dir=workspace_dir)
+
+    orchestrator = SelfImproveOrchestrator(master_root, llm_factory=llm_factory, settings=settings)
+    try:
+        report = orchestrator.run(args.goal, input_ref=args.input)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    _write_line(sys.stdout, json.dumps({"run_root": report.run_root}, indent=2))
+    return 0
+
+
+def _cmd_chat_ui(args: argparse.Namespace) -> int:
+    workspace_dir = Path(args.workspace).resolve() if args.workspace else Path.cwd().resolve()
+    config = ChatUIConfig(
+        host=str(args.host),
+        port=int(args.port),
+        llm_provider=str(args.llm),
+        workspace_dir=workspace_dir,
+    )
+    run_chat_ui(config)
+    return 0
+
+
+def _write_line(stream: TextIO, text: str) -> None:
+    stream.write(text)
+    stream.write("\n")
 
 
 def _find_task_dir(repo_root: Path, task_id: str) -> Path | None:
@@ -320,7 +359,11 @@ def _extract_routed_argv(response: object) -> list[str] | None:
     if raw is None:
         return None
     if isinstance(raw, str):
-        candidate: list[object] = [raw]
+        try:
+            argv = shlex.split(raw)
+        except ValueError:
+            return None
+        return argv or None
     elif isinstance(raw, list):
         candidate = raw
     else:

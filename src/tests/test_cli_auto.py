@@ -37,6 +37,11 @@ def test_auto_decide_argv_falls_back_to_heuristic_on_invalid_llm_response() -> N
     assert _auto_decide_argv("run suite", llm_client=llm) == ["run-suite"]
 
 
+def test_auto_decide_argv_accepts_string_argv_from_llm() -> None:
+    llm = MockLLMClient(script=[{"status": "SUCCESS", "argv": "run-task --task-id demo-1"}])
+    assert _auto_decide_argv("execute demo-1", llm_client=llm) == ["run-task", "--task-id", "demo-1"]
+
+
 def test_self_improve_llm_default_uses_env_else_mixed(monkeypatch) -> None:
     monkeypatch.delenv("TOKIMON_LLM", raising=False)
     parser = build_parser()
