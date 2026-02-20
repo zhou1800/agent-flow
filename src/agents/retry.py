@@ -10,8 +10,14 @@ from typing import Any
 from flow_types import ProgressMetrics
 
 
-def compute_call_signature(goal: str, step_id: str, worker_type: str, key_inputs: dict[str, Any],
-                           strategy_id: str, retrieval_stage: int) -> str:
+def compute_call_signature(
+    goal: str,
+    step_id: str,
+    worker_type: str,
+    key_inputs: dict[str, Any],
+    strategy_id: str,
+    retrieval_stage: int,
+) -> str:
     payload = {
         "goal": goal,
         "step_id": step_id,
@@ -39,21 +45,31 @@ class RetryGate:
         self.seen_signatures.add(signature)
 
     def record_failure(self, task_id: str, call_signature: str, failure_signature: str) -> None:
-        key = hashlib.sha256(f"{task_id}:{call_signature}:{failure_signature}".encode()).hexdigest()
-        self.seen_failures.add(key)
+        self.seen_failures.add(_failure_key(task_id, call_signature, failure_signature))
 
-    def can_retry(self, task_id: str, call_signature: str, failure_signature: str,
-                  prev_metrics: ProgressMetrics | None, new_metrics: ProgressMetrics | None) -> RetryDecision:
+    def can_retry(
+        self,
+        task_id: str,
+        call_signature: str,
+        failure_signature: str,
+        prev_metrics: ProgressMetrics | None,
+        new_metrics: ProgressMetrics | None,
+    ) -> RetryDecision:
         has_progress = _has_progress(prev_metrics, new_metrics)
         if prev_metrics is not None and not has_progress:
             return RetryDecision(False, "no measurable progress")
 
-        fail_key = hashlib.sha256(f"{task_id}:{call_signature}:{failure_signature}".encode()).hexdigest()
+        fail_key = _failure_key(task_id, call_signature, failure_signature)
         if call_signature in self.seen_signatures and not has_progress:
             return RetryDecision(False, "signature repeated without progress")
         if fail_key in self.seen_failures and not has_progress:
             return RetryDecision(False, "failure signature repeated without progress")
         return RetryDecision(True, "retry allowed")
+
+
+def _failure_key(task_id: str, call_signature: str, failure_signature: str) -> str:
+    material = f"{task_id}:{call_signature}:{failure_signature}".encode()
+    return hashlib.sha256(material).hexdigest()
 
 
 def _has_progress(prev: ProgressMetrics | None, new: ProgressMetrics | None) -> bool:
