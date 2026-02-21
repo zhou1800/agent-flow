@@ -12,29 +12,23 @@ from pathlib import Path
 from .base import ToolResult, elapsed_ms
 
 
+_DEFAULT_EXCLUDED_DIR_NAMES: tuple[str, ...] = (
+    "runs",
+    ".tokimon-tmp",
+    ".venv",
+    "node_modules",
+    "dist",
+    "build",
+)
+
+_DEFAULT_EXCLUDED_SUFFIXES: tuple[str, ...] = (".jsonl", ".ndjson")
+
 _DEFAULT_EXCLUDE_GLOBS: tuple[str, ...] = (
-    "--glob=!**/runs/**",
-    "--glob=!**/.tokimon-tmp/**",
-    "--glob=!**/.venv/**",
-    "--glob=!**/node_modules/**",
-    "--glob=!**/dist/**",
-    "--glob=!**/build/**",
-    "--glob=!**/*.jsonl",
-    "--glob=!**/*.ndjson",
+    *(f"--glob=!**/{dir_name}/**" for dir_name in _DEFAULT_EXCLUDED_DIR_NAMES),
+    *(f"--glob=!**/*{suffix}" for suffix in _DEFAULT_EXCLUDED_SUFFIXES),
 )
 
-_DEFAULT_EXCLUDED_DIR_PARTS: frozenset[str] = frozenset(
-    {
-        "runs",
-        ".tokimon-tmp",
-        ".venv",
-        "node_modules",
-        "dist",
-        "build",
-    }
-)
-
-_DEFAULT_EXCLUDED_SUFFIXES: frozenset[str] = frozenset({".jsonl", ".ndjson"})
+_DEFAULT_EXCLUDED_DIR_PARTS: frozenset[str] = frozenset(_DEFAULT_EXCLUDED_DIR_NAMES)
 
 _DEFAULT_MAX_BYTES = 200_000
 
@@ -48,8 +42,6 @@ class GrepTool:
     def search(self, pattern: str, path: str | None = None) -> ToolResult:
         start = time.perf_counter()
         max_bytes = _read_env_int("TOKIMON_GREP_MAX_BYTES", _DEFAULT_MAX_BYTES)
-        if max_bytes < 0:
-            max_bytes = _DEFAULT_MAX_BYTES
         apply_default_excludes = path is None
         target = self.root if path is None else (self.root / path)
         if shutil.which("rg"):
@@ -121,9 +113,12 @@ def _read_env_int(var_name: str, default: int) -> int:
     if not raw:
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         return default
+    if value < 0:
+        return default
+    return value
 
 
 def _run_bounded(cmd: list[str], *, cwd: Path, max_bytes: int) -> tuple[int, bytes, bool]:
