@@ -31,6 +31,7 @@ def test_entrypoint_prompt_includes_constitution_sections() -> None:
         baseline_master_eval=EvaluationResult(ok=True, passed=10, failed=0, failing_tests=[], elapsed_s=0.1),
         pytest_args=["-q"],
         planned_energy=2,
+        experiment_summary_path=Path(".tokimon-tmp/self-improve/experiment/1-1/attempt-1.json"),
         attempt_index=1,
         retry_reason=None,
     )
@@ -46,6 +47,8 @@ def test_entrypoint_prompt_includes_constitution_sections() -> None:
     assert "- delta (improvement or regression)" in prompt
     assert "- causal mechanism hypothesis linking changes to delta" in prompt
     assert "- explicit pass condition for the run" in prompt
+    assert "Required attempt artifact (must be written by the agent):" in prompt
+    assert ".tokimon-tmp/self-improve/experiment/1-1/attempt-1.json" in prompt
 
 
 def test_winner_selection_tie_breaker_by_session_id() -> None:
@@ -93,6 +96,7 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
             verification_ok=True,
             verification_reason="ok",
             entrypoint_attempts=1,
+            causal_mechanism_hypothesis="Fixing flaky setup removes hidden retries, so stable assertions improve pass rate.",
         ),
         SelfImproveSessionResult(
             session_id="1-2",
@@ -111,6 +115,7 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
             verification_ok=True,
             verification_reason="ok",
             entrypoint_attempts=1,
+            causal_mechanism_hypothesis="No effect.",
         ),
     ]
     report = SelfImproveReport(
@@ -150,6 +155,7 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
     expected_pass_condition = "Maintain evaluation ok while keeping session energy within the planned energy budget."
     assert f"Pass condition: {expected_pass_condition} Met:" in markdown
     assert "Causal mechanism hypothesis:" in markdown
+    assert "Fixing flaky setup removes hidden retries" in markdown
 
 
 def test_scoring_does_not_optimize_for_energy() -> None:

@@ -43,12 +43,14 @@ def test_self_improve_runs_sessions_and_merges_winner(tmp_path: Path) -> None:
                 script=[
                     plan,
                     {"tool_calls": [{"tool": "file", "action": "write", "args": {"path": "proj/app.py", "content": "def add(a, b):\n    return a + b\n"}}]},
+                    {"tool_calls": [_experiment_summary_tool_call(session_id, 1, "Fixing add() logic should increase passing tests by repairing arithmetic behavior.")]},
                     {"status": "SUCCESS", "summary": "fixed"},
                 ]
             )
         return MockLLMClient(
             script=[
                 plan,
+                {"tool_calls": [_experiment_summary_tool_call(session_id, 1, "No code change expected for this control session; pass counts should remain unchanged.")]},
                 {"status": "SUCCESS", "summary": "no-op"},
             ]
         )
@@ -101,7 +103,13 @@ def test_self_improve_materializes_file_input_in_session_workspace(tmp_path: Pat
             "summary": "planned",
             "workflow": {"steps": [{"id": "noop", "worker": "Implementer"}]},
         }
-        return MockLLMClient(script=[plan, {"status": "SUCCESS", "summary": "done"}])
+        return MockLLMClient(
+            script=[
+                plan,
+                {"tool_calls": [_experiment_summary_tool_call("1-1", 1, "No-op run should preserve baseline evaluation and verify reporting fields.")]},
+                {"status": "SUCCESS", "summary": "done"},
+            ]
+        )
 
     settings = SelfImproveSettings(
         sessions_per_batch=1,
@@ -153,7 +161,13 @@ def test_self_improve_materializes_absolute_file_input_without_leaking_host_path
             "summary": "planned",
             "workflow": {"steps": [{"id": "noop", "worker": "Implementer"}]},
         }
-        return MockLLMClient(script=[plan, {"status": "SUCCESS", "summary": "done"}])
+        return MockLLMClient(
+            script=[
+                plan,
+                {"tool_calls": [_experiment_summary_tool_call("1-1", 1, "No-op run should preserve baseline evaluation and verify reporting fields.")]},
+                {"status": "SUCCESS", "summary": "done"},
+            ]
+        )
 
     settings = SelfImproveSettings(
         sessions_per_batch=1,
@@ -287,7 +301,7 @@ def test_self_improve_runs_all_batches_when_merge_disabled(tmp_path: Path) -> No
     _git(master, ["add", "."])
     _git(master, ["commit", "-m", "init"])
 
-    def llm_factory(_session_id: str) -> MockLLMClient:
+    def llm_factory(session_id: str) -> MockLLMClient:
         plan = {
             "status": "SUCCESS",
             "summary": "planned",
@@ -296,6 +310,7 @@ def test_self_improve_runs_all_batches_when_merge_disabled(tmp_path: Path) -> No
         return MockLLMClient(
             script=[
                 plan,
+                {"tool_calls": [_experiment_summary_tool_call(session_id, 1, "No-op run should preserve baseline evaluation while still writing experiment metadata.")]},
                 {"status": "SUCCESS", "summary": "done", "artifacts": [], "metrics": {}, "next_actions": [], "failure_signature": ""},
             ]
         )
@@ -346,12 +361,14 @@ def test_self_improve_continues_after_failed_batch_then_merges(tmp_path: Path) -
                 script=[
                     plan,
                     {"tool_calls": [{"tool": "file", "action": "write", "args": {"path": "proj/app.py", "content": "def add(a, b):\n    return a + b\n"}}]},
+                    {"tool_calls": [_experiment_summary_tool_call(session_id, 1, "Fixing add() should eliminate the single failing test and increase passed count.")]},
                     {"status": "SUCCESS", "summary": "fixed", "artifacts": [], "metrics": {}, "next_actions": [], "failure_signature": ""},
                 ]
             )
         return MockLLMClient(
             script=[
                 plan,
+                {"tool_calls": [_experiment_summary_tool_call(session_id, 1, "No-op control session establishes baseline for deterministic winner selection.")]},
                 {"status": "SUCCESS", "summary": "no-op", "artifacts": [], "metrics": {}, "next_actions": [], "failure_signature": ""},
             ]
         )
@@ -403,6 +420,7 @@ def test_self_improve_records_per_step_pytest_metrics(tmp_path: Path) -> None:
         return MockLLMClient(
             script=[
                 plan,
+                {"tool_calls": [_experiment_summary_tool_call("1-1", 1, "No-op run should still capture causal hypothesis and evaluation deltas deterministically.")]},
                 {"status": "SUCCESS", "summary": "done", "artifacts": [], "metrics": {}, "next_actions": [], "failure_signature": ""},
             ]
         )
@@ -460,6 +478,15 @@ def test_self_improve_counts_skipped_steps_as_succeeded(tmp_path: Path) -> None:
                     },
                 },
                 {
+                    "tool_calls": [
+                        _experiment_summary_tool_call(
+                            "1-1",
+                            1,
+                            "Terminating early because tests are already green should preserve baseline evaluation.",
+                        )
+                    ]
+                },
+                {
                     "status": "SUCCESS",
                     "summary": "tests green; terminate early",
                     "metrics": {"terminate_workflow": True, "terminate_reason": "tests green"},
@@ -494,3 +521,21 @@ def _git(cwd: Path, args: list[str]) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _experiment_summary_tool_call(session_id: str, attempt_index: int, hypothesis: str) -> dict[str, object]:
+    payload = {
+        "causal_mechanism_hypothesis": hypothesis,
+        "pass_condition": "Maintain evaluation ok while keeping session energy within the planned energy budget.",
+        "baseline_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
+        "post_change_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
+        "delta": {"passed": 0, "failed": 0},
+    }
+    return {
+        "tool": "file",
+        "action": "write",
+        "args": {
+            "path": f".tokimon-tmp/self-improve/experiment/{session_id}/attempt-{attempt_index}.json",
+            "content": json.dumps(payload),
+        },
+    }

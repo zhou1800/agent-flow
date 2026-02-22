@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -50,6 +51,15 @@ def test_entrypoint_loop_retries_from_prompt_generation_after_failed_verificatio
                     "workflow": {"steps": [{"id": "work", "worker": "Implementer"}]},
                 },
                 {
+                    "tool_calls": [
+                        _experiment_summary_write_tool_call(
+                            "1-1",
+                            1,
+                            "No-op first attempt should not satisfy required change; expect retry.",
+                        )
+                    ]
+                },
+                {
                     "status": "SUCCESS",
                     "summary": "no-op",
                     "artifacts": [],
@@ -72,6 +82,15 @@ def test_entrypoint_loop_retries_from_prompt_generation_after_failed_verificatio
                                 "content": "def add(a, b):\n    # retry attempt wrote this line\n    return a + b\n",
                             },
                         }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        _experiment_summary_write_tool_call(
+                            "1-1",
+                            2,
+                            "Updating add() to return sum satisfies tests and produces required concrete change.",
+                        )
                     ]
                 },
                 {
@@ -135,3 +154,21 @@ def _git(cwd: Path, args: list[str]) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _experiment_summary_write_tool_call(session_id: str, attempt_index: int, hypothesis: str) -> dict[str, object]:
+    payload = {
+        "causal_mechanism_hypothesis": hypothesis,
+        "pass_condition": "Maintain evaluation ok while keeping session energy within the planned energy budget.",
+        "baseline_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
+        "post_change_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
+        "delta": {"passed": 0, "failed": 0},
+    }
+    return {
+        "tool": "file",
+        "action": "write",
+        "args": {
+            "path": f".tokimon-tmp/self-improve/experiment/{session_id}/attempt-{attempt_index}.json",
+            "content": json.dumps(payload),
+        },
+    }

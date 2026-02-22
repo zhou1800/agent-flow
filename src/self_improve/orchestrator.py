@@ -117,6 +117,7 @@ class SelfImproveSessionResult:
     clarifying_questions: list[str] = field(default_factory=list)
     entrypoint_attempts: int = 0
     attempts: list[dict[str, Any]] = field(default_factory=list)
+    causal_mechanism_hypothesis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,6 +309,7 @@ class SelfImproveOrchestrator:
         changes: list[WorkspaceChange] = []
         changed_files: list[str] = []
         entrypoint_attempts = 0
+        causal_mechanism_hypothesis: str | None = None
 
         for attempt_index in range(1, entrypoint_max_attempts + 1):
             entrypoint_attempts = attempt_index
@@ -320,6 +322,7 @@ class SelfImproveOrchestrator:
                 baseline_master_eval,
                 self.settings.pytest_args,
                 planned_energy,
+                experiment_summary_path=_experiment_summary_relpath(session_id, attempt_index),
                 attempt_index=attempt_index,
                 retry_reason=retry_reason,
             )
@@ -372,14 +375,26 @@ class SelfImproveOrchestrator:
             purge_bytecode_for_changes(workspace_dir, changes)
             evaluation = self._evaluate_workspace(workspace_dir)
             changed_files = [change.relpath for change in changes]
-            verification = _verify_session_outcome(
-                goal,
-                baseline_master_eval,
-                evaluation,
-                workflow_ok,
-                changed_files,
-                error,
-            )
+            experiment_summary_path = workspace_dir / _experiment_summary_relpath(session_id, attempt_index)
+            experiment_summary, experiment_error = _load_experiment_summary(experiment_summary_path)
+            if experiment_error is not None:
+                verification = VerificationResult(
+                    ok=False,
+                    reason=f"experiment summary invalid: {experiment_error}",
+                )
+            else:
+                verification = _verify_session_outcome(
+                    goal,
+                    baseline_master_eval,
+                    evaluation,
+                    workflow_ok,
+                    changed_files,
+                    error,
+                )
+                if verification.ok and experiment_summary is not None:
+                    causal_mechanism_hypothesis = str(
+                        experiment_summary["causal_mechanism_hypothesis"]
+                    ).strip()
             attempt_report.update(
                 {
                     "status": "COMPLETED" if verification.ok else "FAILED",
@@ -393,6 +408,8 @@ class SelfImproveOrchestrator:
                     "changed_files": changed_files,
                     "error": error,
                     "verification": verification.__dict__,
+                    "experiment_summary_path": str(_experiment_summary_relpath(session_id, attempt_index)),
+                    "experiment_summary": experiment_summary,
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -409,6 +426,7 @@ class SelfImproveOrchestrator:
                     "changed_files": changed_files,
                     "verification": verification.__dict__,
                     "entrypoint_attempts": attempt_index,
+                    "causal_mechanism_hypothesis": causal_mechanism_hypothesis,
                     "error": error,
                 }
             )
@@ -450,6 +468,7 @@ class SelfImproveOrchestrator:
             clarifying_questions=clarifying_questions,
             entrypoint_attempts=entrypoint_attempts,
             attempts=attempts,
+            causal_mechanism_hypothesis=causal_mechanism_hypothesis,
         )
 
     def _evaluate_workspace(self, root: Path) -> EvaluationResult:
@@ -596,6 +615,7 @@ def _entrypoint_prompt(
     baseline_master_eval: EvaluationResult,
     pytest_args: list[str],
     planned_energy: int,
+    experiment_summary_path: Path,
     *,
     attempt_index: int,
     retry_reason: str | None,
@@ -644,6 +664,10 @@ def _entrypoint_prompt(
         "",
         "Required reporting fields (for auditability):",
         *[f"- {item}" for item in EVAL_FIRST_EXPERIMENT_REQUIREMENTS],
+        "",
+        "Required attempt artifact (must be written by the agent):",
+        f"- path: {experiment_summary_path}",
+        "- json fields (minimum): causal_mechanism_hypothesis, pass_condition, baseline_evaluation, post_change_evaluation, delta",
     ]
     if retry_reason:
         parts.extend(
@@ -751,6 +775,46 @@ def _strategy_hint(session_id: str) -> str:
     return options[idx % len(options)]
 
 
+def _experiment_summary_relpath(session_id: str, attempt_index: int) -> Path:
+    return Path(".tokimon-tmp") / "self-improve" / "experiment" / session_id / f"attempt-{attempt_index}.json"
+
+
+def _load_experiment_summary(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    if not path.exists():
+        return None, f"missing required artifact at {path}"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, f"invalid JSON at {path}: {exc}"
+
+    if not isinstance(payload, dict):
+        return None, "artifact must be a JSON object"
+
+    hypothesis = payload.get("causal_mechanism_hypothesis")
+    if not isinstance(hypothesis, str) or not hypothesis.strip():
+        return None, "causal_mechanism_hypothesis must be a non-empty string"
+
+    pass_condition = payload.get("pass_condition")
+    if not isinstance(pass_condition, str) or not pass_condition.strip():
+        return None, "pass_condition must be a non-empty string"
+
+    for field_name in ("baseline_evaluation", "post_change_evaluation"):
+        value = payload.get(field_name)
+        if not isinstance(value, dict):
+            return None, f"{field_name} must be an object"
+        required = {"ok", "passed", "failed", "failing_tests"}
+        if not required.issubset(value.keys()):
+            return None, f"{field_name} must include keys: {sorted(required)}"
+
+    delta = payload.get("delta")
+    if not isinstance(delta, dict):
+        return None, "delta must be an object"
+    if "passed" not in delta or "failed" not in delta:
+        return None, "delta must include passed and failed"
+
+    return payload, None
+
+
 def _score(
     verification_ok: bool,
     evaluation: EvaluationResult,
@@ -838,6 +902,7 @@ def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
                         "clarifying_questions": session.clarifying_questions,
                         "entrypoint_attempts": session.entrypoint_attempts,
                         "attempts": session.attempts,
+                        "causal_mechanism_hypothesis": session.causal_mechanism_hypothesis,
                         "error": session.error,
                         "score": list(session.score),
                     }
@@ -937,9 +1002,8 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
             )
             lines.append(f"Delta (winner - baseline): passed={delta_passed} failed={delta_failed}")
             lines.append(f"Pass condition: {pass_condition} Met: {met}")
-            lines.append(
-                "Causal mechanism hypothesis: see winner session attempt summaries/artifacts (reported by the agent; not inferred here)."
-            )
+            winner_hypothesis = (winner.causal_mechanism_hypothesis or "").strip()
+            lines.append(f"Causal mechanism hypothesis: {winner_hypothesis or 'N/A'}")
         if batch.master_evaluation:
             lines.append(
                 f"Master eval: ok={batch.master_evaluation.ok} passed={batch.master_evaluation.passed} failed={batch.master_evaluation.failed} failing_tests={batch.master_evaluation.failing_tests[:20]}"
