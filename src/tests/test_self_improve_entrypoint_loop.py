@@ -9,6 +9,7 @@ import pytest
 
 from llm.client import MockLLMClient
 from self_improve.orchestrator import SelfImproveOrchestrator, SelfImproveSettings
+from self_improve.orchestrator import _path_charter
 
 
 def test_entrypoint_loop_blocks_ambiguous_goal_with_clarifying_questions(tmp_path: Path) -> None:
@@ -163,6 +164,10 @@ def _experiment_summary_write_tool_call(session_id: str, attempt_index: int, hyp
         "baseline_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
         "post_change_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
         "delta": {"passed": 0, "failed": 0},
+        "plan": ["Baseline eval", "Smallest change", "Re-run eval", "Report delta"],
+        "path_charter": _path_charter(session_id),
+        "self_critique": "Low risk for test harness; confidence medium because only entrypoint loop behavior changes.",
+        "lessons": ["Ensure experiment summaries include protocol fields for deterministic selection/reporting."],
     }
     return {
         "tool": "file",

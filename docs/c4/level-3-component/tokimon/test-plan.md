@@ -30,6 +30,7 @@ This document maps requirements to automated tests.
 - Report markdown includes constitution headings and planned vs actual energy with correct actual sum (see `src/tests/test_self_improve_constitution.py`).
 - Entry-point prompt includes Evaluation-First Experiment Loop requirements (baseline, post-change, delta, causal mechanism, pass condition) (see `src/tests/test_self_improve_constitution.py`).
 - Report markdown includes Evaluation-First Experiment Loop summary (baseline, post-change, delta, causal mechanism, pass condition) and includes a bounded list of failing test identifiers in baseline/post-change summaries (see `src/tests/test_self_improve_constitution.py`).
+- Parallel exploration protocol: deterministic `path_charter` per session, diversity check (pairwise differences in >= 2 dimensions), enforced per-attempt experiment summary fields (`plan`, `path_charter`, `self_critique`, `lessons`), deterministic winner selection by pre-declared score, and report includes required protocol sections/table (see `src/tests/test_parallel_exploration_protocol.py`).
 
 ## Integration Tests
 - End-to-end run of at least two benchmark tasks using the mock model:

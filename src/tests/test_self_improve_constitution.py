@@ -60,7 +60,7 @@ def test_winner_selection_tie_breaker_by_session_id() -> None:
         workflow_status="SUCCEEDED",
         workflow_error=None,
         evaluation=evaluation,
-        score=(1, 1, 1, 1, 1, 0),
+        score=(1, 1, 1, 1, 1),
         model_calls=0,
         tool_calls=0,
         changed_files=[],
@@ -87,7 +87,7 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
             workflow_status="SUCCEEDED",
             workflow_error=None,
             evaluation=evaluation,
-            score=(1, 1, 1, 1, 1, 0),
+            score=(1, 1, 1, 1, 1),
             model_calls=2,
             tool_calls=3,
             changed_files=["a.py"],
@@ -106,7 +106,7 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
             workflow_status="SUCCEEDED",
             workflow_error=None,
             evaluation=evaluation,
-            score=(1, 1, 1, 1, 1, 0),
+            score=(1, 1, 1, 1, 1),
             model_calls=1,
             tool_calls=4,
             changed_files=["b.py"],
@@ -143,11 +143,13 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
     assert "## Scoring Rubric" in markdown
     assert "## Energy Budget" in markdown
     assert "## Experiment Loop Summary" in markdown
+    assert "## Parallel Exploration Protocol" in markdown
     assert "## Audit Log" in markdown
     planned_energy = 2 * 1 * 3 * 2
     actual_energy = (2 + 3) + (1 + 4)
     assert f"Planned energy: {planned_energy}" in markdown
     assert f"Actual energy: {actual_energy}" in markdown
+    assert "Declared scoring function:" in markdown
     assert "Baseline eval:" in markdown
     assert "Post-change eval (winner):" in markdown
     assert "failing_tests=['a::test_one']" in markdown

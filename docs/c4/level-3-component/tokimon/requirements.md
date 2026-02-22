@@ -168,6 +168,30 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
       - On merge conflicts, automatically resolve (prefer winner changes) and continue; on failing evaluation, abort and leave master unchanged.
 - The system runs up to the configured number of batches, even when merge is disabled (report-only mode) or when a batch fails to produce a mergeable winner.
 
+#### Parallel Exploration Protocol (Diverse Paths, Deterministic Selection)
+- For each batch, Tokimon MUST run N parallel “paths” (sessions) that are meaningfully different in at least 2 dimensions:
+  - decomposition (plan granularity),
+  - root-cause hypothesis,
+  - tool sequence,
+  - skill usage.
+- Each path MUST be assigned a deterministic `path_charter` derived from `session_id` and recorded in:
+  - the session entry-point prompt,
+  - the session report JSON,
+  - the per-attempt experiment summary artifact.
+- Each path MUST write a per-attempt experiment summary artifact that includes (minimum):
+  - `plan` (short plan),
+  - `path_charter` (dimensions above),
+  - `self_critique` (1 paragraph; failure modes + confidence),
+  - `lessons` (list of Lesson strings produced by the path),
+  - plus the evaluation-first experiment-loop fields (baseline, post-change, delta, causal mechanism, pass condition).
+- The batch report MUST include:
+  - a diversity summary/check (pass/fail + details),
+  - the declared deterministic scoring function (declared before scoring),
+  - a per-path comparison table,
+  - winner rationale by score (not narrative preference),
+  - why non-winners lost and what Lesson(s) they produced.
+- Winner selection MUST remain deterministic and aligned with `docs/tokimon-constitution.md` (do not use energy as a selector).
+
 #### Self-Improve Session Context Contract
 - Each session receives:
   - The raw `goal` string.

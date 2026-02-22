@@ -15,3 +15,5 @@ This document tracks prioritized follow-up work to reduce OOM risk and improve r
    - Follow-up complete: Winner causal mechanism hypothesis is now loaded from per-attempt experiment JSON and rendered directly in the top-level batch report.
 6. [ ] Self-improve: include failing test IDs in baseline/post-change summaries (Owner: TBD)
    - Acceptance criteria: Batch report shows a bounded list of `failing_tests` for baseline and winner post-change evaluations to make deltas auditable.
+7. [ ] Self-improve: parallel exploration protocol (Owner: TBD)
+   - Acceptance criteria: Deterministic per-session `path_charter`, enforced per-attempt experiment summary fields (`plan`, `path_charter`, `self_critique`, `lessons` + experiment-loop fields), report includes diversity check + scoring function + per-path comparison + loser reasons/Lessons, and deterministic winner selection aligned with the Constitution.

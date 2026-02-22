@@ -10,6 +10,7 @@ import pytest
 from llm.client import MockLLMClient
 from self_improve.orchestrator import EvaluationResult
 from self_improve.orchestrator import SelfImproveOrchestrator, SelfImproveSessionResult, SelfImproveSettings
+from self_improve.orchestrator import _path_charter
 from self_improve.workspace import clone_master, compute_changes
 
 
@@ -240,7 +241,7 @@ def test_self_improve_merge_resolves_conflicts_and_commits(tmp_path: Path) -> No
         workflow_status="SUCCEEDED",
         workflow_error=None,
         evaluation=EvaluationResult(ok=True, passed=1, failed=0, failing_tests=[], elapsed_s=0.0),
-        score=(1, 1, 1, 1, 1, 1),
+        score=(1, 1, 1, 1, 1),
         model_calls=0,
         tool_calls=0,
         changed_files=[change.relpath for change in changes],
@@ -530,6 +531,10 @@ def _experiment_summary_tool_call(session_id: str, attempt_index: int, hypothesi
         "baseline_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
         "post_change_evaluation": {"ok": True, "passed": 1, "failed": 0, "failing_tests": []},
         "delta": {"passed": 0, "failed": 0},
+        "plan": ["Baseline eval", "Smallest change", "Re-run eval", "Report delta"],
+        "path_charter": _path_charter(session_id),
+        "self_critique": "Low risk: schema/reporting updates may miss an edge case; confidence medium because tests cover required fields.",
+        "lessons": ["Ensure experiment summaries include protocol fields for deterministic selection/reporting."],
     }
     return {
         "tool": "file",

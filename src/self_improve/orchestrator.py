@@ -54,8 +54,20 @@ SCORING_RUBRIC = [
     "Workflow outcome (success=1, otherwise=0)",
     "Concrete changes produced (yes=1, no=0)",
     "Passed test count (higher is better)",
-    "Failed test count (lower is better)",
 ]
+
+PATH_CHARTER_KEYS: tuple[str, ...] = (
+    "decomposition",
+    "root_cause_hypothesis",
+    "tool_sequence",
+    "skill_usage",
+)
+
+DECLARED_SCORING_FUNCTION = (
+    "score = (verification_ok, evaluation_ok, workflow_ok, has_changes, passed_tests); "
+    "higher is better (lexicographic). Tie-breaker: lowest session_id (lexicographic). "
+    "Energy is reported for auditability but MUST NOT influence scoring."
+)
 
 EVAL_FIRST_EXPERIMENT_REQUIREMENTS = [
     "baseline evaluation summary",
@@ -106,11 +118,12 @@ class SelfImproveSessionResult:
     workflow_status: str | None
     workflow_error: str | None
     evaluation: EvaluationResult
-    score: tuple[int, int, int, int, int, int]
+    score: tuple[int, int, int, int, int]
     model_calls: int
     tool_calls: int
     changed_files: list[str]
     changes: list[WorkspaceChange]
+    path_charter: dict[str, str] = field(default_factory=dict)
     error: str | None = None
     verification_ok: bool = False
     verification_reason: str | None = None
@@ -219,6 +232,7 @@ class SelfImproveOrchestrator:
         session_dir.mkdir(parents=True, exist_ok=True)
         clone_master(self.master_root, workspace_dir, include_paths=self.settings.include_paths)
         session_input_payload = _materialize_session_input(workspace_dir, input_payload)
+        path_charter = _path_charter(session_id)
 
         llm_client = self.llm_factory(session_id, workspace_dir)
         runner = HierarchicalRunner(workspace_dir, llm_client, base_dir=workspace_dir / "runs")
@@ -240,6 +254,7 @@ class SelfImproveOrchestrator:
             "session_id": session_id,
             "goal": goal,
             "input": {"kind": session_input_payload.kind, "ref": session_input_payload.ref},
+            "path_charter": path_charter,
             "master_baseline_evaluation": baseline_master_eval.__dict__,
             "pytest_args": list(self.settings.pytest_args),
             "entrypoint_max_attempts": entrypoint_max_attempts,
@@ -286,6 +301,7 @@ class SelfImproveOrchestrator:
             (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
             return SelfImproveSessionResult(
                 session_id=session_id,
+                path_charter=path_charter,
                 workspace_root=str(workspace_dir),
                 run_root=run_root,
                 workflow_ok=workflow_ok,
@@ -451,6 +467,7 @@ class SelfImproveOrchestrator:
         (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
         return SelfImproveSessionResult(
             session_id=session_id,
+            path_charter=path_charter,
             workspace_root=str(workspace_dir),
             run_root=run_root,
             workflow_ok=workflow_ok,
@@ -621,6 +638,7 @@ def _entrypoint_prompt(
     retry_reason: str | None,
 ) -> str:
     strategy = _strategy_hint(session_id)
+    path_charter = _path_charter(session_id)
     pass_condition = _pick_pass_condition(baseline_master_eval)
     parts = [
         CONSTITUTION_ACK,
@@ -652,6 +670,7 @@ def _entrypoint_prompt(
         f"Session: {session_id}",
         f"Attempt: {attempt_index}",
         f"Strategy: {strategy}",
+        f"Path charter (Parallel Exploration Protocol): {json.dumps(path_charter, sort_keys=True)}",
         "",
         "Master baseline evaluation (before this session):",
         f"- ok: {baseline_master_eval.ok}",
@@ -667,7 +686,13 @@ def _entrypoint_prompt(
         "",
         "Required attempt artifact (must be written by the agent):",
         f"- path: {experiment_summary_path}",
-        "- json fields (minimum): causal_mechanism_hypothesis, pass_condition, baseline_evaluation, post_change_evaluation, delta",
+        "- json fields (minimum): causal_mechanism_hypothesis, pass_condition, baseline_evaluation, post_change_evaluation, delta, plan, path_charter, self_critique, lessons",
+        "",
+        "Parallel Exploration Protocol (required):",
+        "1) Follow the path charter dimensions; do not collapse into other paths.",
+        "2) Write a short plan and a 1-paragraph self-critique into the experiment summary artifact.",
+        "3) Run the same evaluation harness as other paths and report comparable metrics.",
+        "4) Do not modify governance invariants to 'win'.",
     ]
     if retry_reason:
         parts.extend(
@@ -775,6 +800,51 @@ def _strategy_hint(session_id: str) -> str:
     return options[idx % len(options)]
 
 
+def _path_charter(session_id: str) -> dict[str, str]:
+    """Return a deterministic Path Charter for Parallel Exploration Protocol.
+
+    Charters must be meaningfully different across sessions (at least 2 dimensions).
+    """
+
+    charters: list[dict[str, str]] = [
+        {
+            "decomposition": "fine",
+            "root_cause_hypothesis": "spec-doc mismatch or missing requirement mapping",
+            "tool_sequence": "docs->tests->code",
+            "skill_usage": "prefer skills when helpful",
+        },
+        {
+            "decomposition": "coarse",
+            "root_cause_hypothesis": "missing tests or weak assertions are hiding regressions",
+            "tool_sequence": "tests->code",
+            "skill_usage": "no special skills",
+        },
+        {
+            "decomposition": "fine",
+            "root_cause_hypothesis": "artifact schema/report gaps prevent reliable selection",
+            "tool_sequence": "code->tests->docs",
+            "skill_usage": "use ai-agent-cli style batching if relevant",
+        },
+        {
+            "decomposition": "coarse",
+            "root_cause_hypothesis": "determinism or winner-selection implementation bug",
+            "tool_sequence": "read->code->tests",
+            "skill_usage": "no special skills",
+        },
+        {
+            "decomposition": "medium",
+            "root_cause_hypothesis": "resource stress or concurrency corner case",
+            "tool_sequence": "measure->cap->run",
+            "skill_usage": "no special skills",
+        },
+    ]
+    try:
+        idx = int(session_id.split("-")[-1]) - 1
+    except Exception:
+        idx = 0
+    return dict(charters[idx % len(charters)])
+
+
 def _experiment_summary_relpath(session_id: str, attempt_index: int) -> Path:
     return Path(".tokimon-tmp") / "self-improve" / "experiment" / session_id / f"attempt-{attempt_index}.json"
 
@@ -812,6 +882,32 @@ def _load_experiment_summary(path: Path) -> tuple[dict[str, Any] | None, str | N
     if "passed" not in delta or "failed" not in delta:
         return None, "delta must include passed and failed"
 
+    plan = payload.get("plan")
+    if not isinstance(plan, list) or not plan:
+        return None, "plan must be a non-empty list of strings"
+    if not all(isinstance(step, str) and step.strip() for step in plan):
+        return None, "plan must be a non-empty list of non-empty strings"
+
+    path_charter = payload.get("path_charter")
+    if not isinstance(path_charter, dict):
+        return None, "path_charter must be an object"
+    if not set(PATH_CHARTER_KEYS).issubset(path_charter.keys()):
+        return None, f"path_charter must include keys: {list(PATH_CHARTER_KEYS)}"
+    for key in PATH_CHARTER_KEYS:
+        value = path_charter.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None, f"path_charter.{key} must be a non-empty string"
+
+    self_critique = payload.get("self_critique")
+    if not isinstance(self_critique, str) or not self_critique.strip():
+        return None, "self_critique must be a non-empty string"
+
+    lessons = payload.get("lessons")
+    if not isinstance(lessons, list):
+        return None, "lessons must be a list of strings"
+    if not all(isinstance(item, str) and item.strip() for item in lessons):
+        return None, "lessons must be a list of non-empty strings"
+
     return payload, None
 
 
@@ -822,16 +918,15 @@ def _score(
     changed_files: int,
     _model_calls: int,
     _tool_calls: int,
-) -> tuple[int, int, int, int, int, int]:
+) -> tuple[int, int, int, int, int]:
     verified = 1 if verification_ok else 0
     ok = 1 if evaluation.ok else 0
     workflow = 1 if workflow_ok else 0
     has_changes = 1 if changed_files > 0 else 0
     passed = int(evaluation.passed or 0)
-    failed = int(evaluation.failed or 0) if evaluation.ok else int(evaluation.failed or 9999)
     # Primary: verification outcome; Secondary: evaluation ok; then workflow, concrete changes, and test counts.
     # Energy is reported for auditability but must not influence scoring/winner selection.
-    return (verified, ok, workflow, has_changes, passed, -failed)
+    return (verified, ok, workflow, has_changes, passed)
 
 
 def _planned_energy_budget(sessions: int, max_attempts: int) -> int:
@@ -859,14 +954,13 @@ def _rank_sessions(sessions: list[SelfImproveSessionResult]) -> list[SelfImprove
     return sorted(sessions, key=_session_sort_key)
 
 
-def _session_sort_key(session: SelfImproveSessionResult) -> tuple[int, int, int, int, int, int, str]:
+def _session_sort_key(session: SelfImproveSessionResult) -> tuple[int, int, int, int, int, str]:
     return (
         -int(session.score[0]),
         -int(session.score[1]),
         -int(session.score[2]),
         -int(session.score[3]),
         -int(session.score[4]),
-        -int(session.score[5]),
         session.session_id,
     )
 
@@ -888,6 +982,7 @@ def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
                 "sessions": [
                     {
                         "session_id": session.session_id,
+                        "path_charter": session.path_charter,
                         "workspace_root": session.workspace_root,
                         "run_root": session.run_root,
                         "workflow_ok": session.workflow_ok,
@@ -951,6 +1046,11 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
         "",
         "Required reporting: baseline, post-change, delta, causal mechanism, pass condition.",
         "",
+        "## Parallel Exploration Protocol",
+        "",
+        "This run uses diverse parallel paths with deterministic winner selection.",
+        f"Declared scoring function: {DECLARED_SCORING_FUNCTION}",
+        "",
         "## Audit Log",
         "",
         "Audit entries (per session):",
@@ -977,6 +1077,9 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
         lines.append(f"### Batch {batch.batch_index}")
         lines.append("")
         lines.append(f"Winner: {batch.winner_session_id} | Merged: {batch.merged}")
+        diversity_ok, diversity_detail = _diversity_check(batch.sessions)
+        lines.append(f"Diversity check: {'PASS' if diversity_ok else 'FAIL'} ({diversity_detail})")
+        lines.append(f"Scoring (declared): {DECLARED_SCORING_FUNCTION}")
         lines.append(
             f"Baseline eval: ok={batch.master_baseline_evaluation.ok} passed={batch.master_baseline_evaluation.passed} failed={batch.master_baseline_evaluation.failed} failing_tests={batch.master_baseline_evaluation.failing_tests[:20]}"
         )
@@ -1009,6 +1112,26 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
                 f"Master eval: ok={batch.master_evaluation.ok} passed={batch.master_evaluation.passed} failed={batch.master_evaluation.failed} failing_tests={batch.master_evaluation.failing_tests[:20]}"
             )
         lines.append("")
+        lines.append("Per-path comparison (Parallel Exploration Protocol):")
+        lines.append("")
+        lines.append(
+            "| Session | Score | Verified | Eval OK | Passed | Changes | Decomposition | Hypothesis | Tool Seq | Skill Usage | Loser Reason | Lessons |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for session in batch.sessions:
+            experiment = _latest_experiment_summary(session)
+            lessons = ", ".join((experiment.get("lessons") or []) if isinstance(experiment, dict) else [])
+            if not lessons:
+                lessons = "N/A"
+            loser_reason = _loser_reason(winner, session) if winner else "N/A"
+            charter = session.path_charter or {}
+            lines.append(
+                f"| {session.session_id} | {session.score} | {session.verification_ok} | {session.evaluation.ok} | "
+                f"{session.evaluation.passed} | {len(session.changed_files)} | "
+                f"{charter.get('decomposition','')} | {charter.get('root_cause_hypothesis','')} | "
+                f"{charter.get('tool_sequence','')} | {charter.get('skill_usage','')} | {loser_reason} | {lessons} |"
+            )
+        lines.append("")
         lines.append("| Session | Verified | OK | Passed | Failed | Workflow | Attempts | Model | Tool | Changed Files | Workspace | Run |")
         lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for session in batch.sessions:
@@ -1018,6 +1141,56 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def _latest_experiment_summary(session: SelfImproveSessionResult) -> dict[str, Any] | None:
+    for attempt in reversed(session.attempts or []):
+        summary = attempt.get("experiment_summary")
+        if isinstance(summary, dict):
+            return summary
+    return None
+
+
+def _charter_distance(a: dict[str, str] | None, b: dict[str, str] | None) -> int:
+    left = a or {}
+    right = b or {}
+    distance = 0
+    for key in PATH_CHARTER_KEYS:
+        if str(left.get(key, "")).strip() != str(right.get(key, "")).strip():
+            distance += 1
+    return distance
+
+
+def _diversity_check(sessions: list[SelfImproveSessionResult]) -> tuple[bool, str]:
+    if not sessions:
+        return False, "no sessions"
+    min_distance: int | None = None
+    for i in range(len(sessions)):
+        for j in range(i + 1, len(sessions)):
+            dist = _charter_distance(sessions[i].path_charter, sessions[j].path_charter)
+            min_distance = dist if min_distance is None else min(min_distance, dist)
+    if min_distance is None:
+        return False, "insufficient sessions for diversity check"
+    ok = min_distance >= 2
+    return ok, f"min_pairwise_distance={min_distance} (require >= 2)"
+
+
+def _loser_reason(winner: SelfImproveSessionResult | None, session: SelfImproveSessionResult) -> str:
+    if winner is None:
+        return "N/A"
+    if session.session_id == winner.session_id:
+        return "winner"
+    if not session.verification_ok:
+        return f"verification failed: {(session.verification_reason or 'unknown')}"
+    if not session.evaluation.ok:
+        return "evaluation not ok"
+    if session.score == winner.score:
+        return "tie lost by session_id"
+    # Deterministic explanation: first tuple element where the winner dominates.
+    for idx, (w, s) in enumerate(zip(winner.score, session.score), start=1):
+        if w != s:
+            return f"lower score at position {idx} ({s} < {w})"
+    return "lower score"
 
 
 def _clarifying_questions_for_goal(goal: str) -> list[str]:
