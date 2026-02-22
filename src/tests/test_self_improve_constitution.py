@@ -38,6 +38,14 @@ def test_entrypoint_prompt_includes_constitution_sections() -> None:
     assert first_line.startswith("Constitution Acknowledgement:")
     assert "Immutable Invariants:" in prompt
     assert "## Evaluation Plan (Required)" in prompt
+    assert "Evaluation-first experiment loop" in prompt
+    assert "Pass condition (this session):" in prompt
+    assert "Required reporting fields (for auditability):" in prompt
+    assert "- baseline evaluation summary" in prompt
+    assert "- post-change evaluation summary" in prompt
+    assert "- delta (improvement or regression)" in prompt
+    assert "- causal mechanism hypothesis linking changes to delta" in prompt
+    assert "- explicit pass condition for the run" in prompt
 
 
 def test_winner_selection_tie_breaker_by_session_id() -> None:
@@ -66,7 +74,7 @@ def test_winner_selection_tie_breaker_by_session_id() -> None:
 
 
 def test_report_markdown_includes_constitution_headings_and_energy() -> None:
-    evaluation = EvaluationResult(ok=True, passed=1, failed=0, failing_tests=[], elapsed_s=0.0)
+    evaluation = EvaluationResult(ok=True, passed=1, failed=0, failing_tests=["a::test_one"], elapsed_s=0.0)
     sessions = [
         SelfImproveSessionResult(
             session_id="1-1",
@@ -129,11 +137,19 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
     assert "## Constitution Acknowledgement" in markdown
     assert "## Scoring Rubric" in markdown
     assert "## Energy Budget" in markdown
+    assert "## Experiment Loop Summary" in markdown
     assert "## Audit Log" in markdown
     planned_energy = 2 * 1 * 3 * 2
     actual_energy = (2 + 3) + (1 + 4)
     assert f"Planned energy: {planned_energy}" in markdown
     assert f"Actual energy: {actual_energy}" in markdown
+    assert "Baseline eval:" in markdown
+    assert "Post-change eval (winner):" in markdown
+    assert "failing_tests=['a::test_one']" in markdown
+    assert "Delta (winner - baseline):" in markdown
+    expected_pass_condition = "Maintain evaluation ok while keeping session energy within the planned energy budget."
+    assert f"Pass condition: {expected_pass_condition} Met:" in markdown
+    assert "Causal mechanism hypothesis:" in markdown
 
 
 def test_scoring_does_not_optimize_for_energy() -> None:

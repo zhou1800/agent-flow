@@ -28,6 +28,8 @@ This document maps requirements to automated tests.
 - Entry-point prompt includes Constitution Acknowledgement, Immutable Invariants, and `## Evaluation Plan (Required)` (see `src/tests/test_self_improve_constitution.py`).
 - Winner selection tie-breaker uses lowest `session_id` when scores tie (see `src/tests/test_self_improve_constitution.py`).
 - Report markdown includes constitution headings and planned vs actual energy with correct actual sum (see `src/tests/test_self_improve_constitution.py`).
+- Entry-point prompt includes Evaluation-First Experiment Loop requirements (baseline, post-change, delta, causal mechanism, pass condition) (see `src/tests/test_self_improve_constitution.py`).
+- Report markdown includes Evaluation-First Experiment Loop summary (baseline, post-change, delta, causal mechanism, pass condition) and includes a bounded list of failing test identifiers in baseline/post-change summaries (see `src/tests/test_self_improve_constitution.py`).
 
 ## Integration Tests
 - End-to-end run of at least two benchmark tasks using the mock model:

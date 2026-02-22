@@ -57,6 +57,14 @@ SCORING_RUBRIC = [
     "Failed test count (lower is better)",
 ]
 
+EVAL_FIRST_EXPERIMENT_REQUIREMENTS = [
+    "baseline evaluation summary",
+    "post-change evaluation summary",
+    "delta (improvement or regression)",
+    "causal mechanism hypothesis linking changes to delta",
+    "explicit pass condition for the run",
+]
+
 
 @dataclass(frozen=True)
 class SelfImproveSettings:
@@ -593,6 +601,7 @@ def _entrypoint_prompt(
     retry_reason: str | None,
 ) -> str:
     strategy = _strategy_hint(session_id)
+    pass_condition = _pick_pass_condition(baseline_master_eval)
     parts = [
         CONSTITUTION_ACK,
         "",
@@ -602,16 +611,21 @@ def _entrypoint_prompt(
         "## Evaluation Plan (Required)",
         f"- Planned energy budget (this session): {planned_energy}",
         "- Actual energy must be reported as model_calls + tool_calls.",
+        "- Evaluation-first experiment loop: run baseline, change, re-measure, and report baseline/post-change/delta/causal/pass condition.",
+        f"- Pass condition (this session): {pass_condition}",
         "",
         "Self-improve entry-point task.",
         "",
         "Execution flow (must be followed in order):",
         "1) Understand the user request; if ambiguous, stop and ask clarifying questions immediately.",
         "2) Once clear, continue.",
-        "3) Generate a concrete prompt/plan tied to requested outcomes.",
-        "4) Run the agent workflow with the generated prompt.",
-        "5) Monitor and report progress.",
-        "6) Verify final outcome; if verification fails, return details so the orchestrator retries from step 3.",
+        "3) Run a baseline evaluation and summarize results.",
+        "4) Identify the smallest candidate improvements that could move the evaluation signal.",
+        "5) Execute improvements in short, verifiable steps.",
+        "6) After each step, re-run evaluation signals and log progress.",
+        "7) If progress stalls, change strategy (do not repeat identical attempts).",
+        "8) If evaluation regresses, undo the change and record a Lesson about why it regressed.",
+        "9) Verify final outcome; if verification fails, return details so the orchestrator retries from step 3.",
         "",
         f"User request: {goal.strip()}",
         "",
@@ -627,6 +641,9 @@ def _entrypoint_prompt(
         "",
         "Evaluation command (run via pytest tool):",
         f"- args: {pytest_args}",
+        "",
+        "Required reporting fields (for auditability):",
+        *[f"- {item}" for item in EVAL_FIRST_EXPERIMENT_REQUIREMENTS],
     ]
     if retry_reason:
         parts.extend(
@@ -646,6 +663,26 @@ def _entrypoint_prompt(
             ]
         )
     return "\n".join(parts).strip() + "\n"
+
+
+def _pick_pass_condition(baseline_master_eval: EvaluationResult) -> str:
+    baseline_failed = int(baseline_master_eval.failed or 0)
+    if baseline_failed > 0:
+        return "Reduce failing tests by >= 1 (relative to master baseline)."
+    return "Maintain evaluation ok while keeping session energy within the planned energy budget."
+
+
+def _pass_condition_met(
+    baseline_master_eval: EvaluationResult,
+    session_eval: EvaluationResult,
+    session_energy: int,
+    planned_session_energy: int,
+) -> bool:
+    baseline_failed = int(baseline_master_eval.failed or 0)
+    current_failed = int(session_eval.failed or 0)
+    if baseline_failed > 0:
+        return session_eval.ok and current_failed <= (baseline_failed - 1)
+    return session_eval.ok and session_energy <= planned_session_energy
 
 
 def _wrap_llm_factory(factory: Callable[..., LLMClient]) -> Callable[[str, Path], LLMClient]:
@@ -815,6 +852,9 @@ def _report_to_dict(report: SelfImproveReport) -> dict[str, Any]:
 def _report_to_markdown(report: SelfImproveReport) -> str:
     planned_energy = _planned_energy_from_settings(report.settings)
     actual_energy = _actual_energy(report)
+    planned_session_energy = _planned_energy_budget(
+        1, int(report.settings.get("entrypoint_max_attempts") or 1)
+    )
     lines = [
         "# Tokimon Self-Improve Report",
         "",
@@ -839,6 +879,12 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
         "",
         f"Planned energy: {planned_energy}",
         f"Actual energy: {actual_energy} (sum of model_calls + tool_calls across all sessions)",
+        "",
+        "## Experiment Loop Summary",
+        "",
+        "This run follows an evaluation-first experiment loop: baseline evaluation, bounded changes, re-evaluation, then acceptance/rejection.",
+        "",
+        "Required reporting: baseline, post-change, delta, causal mechanism, pass condition.",
         "",
         "## Audit Log",
         "",
@@ -867,11 +913,36 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
         lines.append("")
         lines.append(f"Winner: {batch.winner_session_id} | Merged: {batch.merged}")
         lines.append(
-            f"Baseline eval: ok={batch.master_baseline_evaluation.ok} passed={batch.master_baseline_evaluation.passed} failed={batch.master_baseline_evaluation.failed}"
+            f"Baseline eval: ok={batch.master_baseline_evaluation.ok} passed={batch.master_baseline_evaluation.passed} failed={batch.master_baseline_evaluation.failed} failing_tests={batch.master_baseline_evaluation.failing_tests[:20]}"
         )
+        winner = None
+        if batch.winner_session_id:
+            for session in batch.sessions:
+                if session.session_id == batch.winner_session_id:
+                    winner = session
+                    break
+        if winner:
+            delta_passed = (winner.evaluation.passed or 0) - (batch.master_baseline_evaluation.passed or 0)
+            delta_failed = (winner.evaluation.failed or 0) - (batch.master_baseline_evaluation.failed or 0)
+            winner_energy = int(winner.model_calls) + int(winner.tool_calls)
+            pass_condition = _pick_pass_condition(batch.master_baseline_evaluation)
+            met = _pass_condition_met(
+                batch.master_baseline_evaluation,
+                winner.evaluation,
+                winner_energy,
+                planned_session_energy,
+            )
+            lines.append(
+                f"Post-change eval (winner): ok={winner.evaluation.ok} passed={winner.evaluation.passed} failed={winner.evaluation.failed} failing_tests={winner.evaluation.failing_tests[:20]}"
+            )
+            lines.append(f"Delta (winner - baseline): passed={delta_passed} failed={delta_failed}")
+            lines.append(f"Pass condition: {pass_condition} Met: {met}")
+            lines.append(
+                "Causal mechanism hypothesis: see winner session attempt summaries/artifacts (reported by the agent; not inferred here)."
+            )
         if batch.master_evaluation:
             lines.append(
-                f"Master eval: ok={batch.master_evaluation.ok} passed={batch.master_evaluation.passed} failed={batch.master_evaluation.failed}"
+                f"Master eval: ok={batch.master_evaluation.ok} passed={batch.master_evaluation.passed} failed={batch.master_evaluation.failed} failing_tests={batch.master_evaluation.failing_tests[:20]}"
             )
         lines.append("")
         lines.append("| Session | Verified | OK | Passed | Failed | Workflow | Attempts | Model | Tool | Changed Files | Workspace | Run |")

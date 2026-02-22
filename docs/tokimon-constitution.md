@@ -28,6 +28,8 @@ This constitution is the immutable, binding contract for Tokimon self-improve ru
 - Evaluation must be explicit and executable (pytest by default for this repo).
 - Planned vs actual energy must be reported for every batch and for the overall run.
 - Actual energy must be computed as the sum of `model_calls + tool_calls` across all sessions in the report.
+- Self-improve reports must include baseline evaluation summary, post-change evaluation summary, delta, a causal mechanism hypothesis, and an explicit pass condition.
+- The pass condition must be chosen deterministically for auditability and be reported verbatim in the entry-point prompt and report.
 
 ## Scoring Rubric
 Scoring is deterministic and ordered by the following tuple (higher is better):

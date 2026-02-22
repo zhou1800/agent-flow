@@ -189,12 +189,34 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Verify the outcome using workflow status plus evaluation checks.
   - If verification fails, restart from prompt generation (retry loop) until success or attempt budget is exhausted.
 
+#### Self-Improve Evaluation-First Experiment Loop (Required)
+- Self-improvement MUST be treated as an experiment loop:
+  1) Run a baseline evaluation and summarize results.
+  2) Propose the smallest candidate change(s) that could move the evaluation signal.
+  3) Apply changes in short, verifiable steps.
+  4) After each step, re-run evaluation signals and log progress.
+  5) If progress stalls, change strategy (do not repeat identical attempts).
+  6) If evaluation regresses, undo the change and record a Lesson describing the regression.
+- Session reports and the batch report MUST include:
+  - baseline evaluation summary,
+  - post-change evaluation summary,
+  - delta (improvement or regression),
+  - a brief causal mechanism hypothesis linking the change to the delta,
+  - an explicit pass condition for the run (chosen deterministically for auditability).
+- Reporting format requirements (minimum):
+  - Baseline evaluation summary MUST be taken before any session changes and include `ok`, `passed`, `failed`, and a bounded list of `failing_tests` identifiers.
+  - Post-change evaluation summary MUST be taken after the final accepted change and include the same fields.
+  - Delta MUST be computed as `post-change - baseline` at minimum for `passed` and `failed`.
+  - Causal mechanism hypothesis MUST be written by the agent as a short, falsifiable explanation connecting the change(s) to the delta (do not invent mechanisms not supported by artifacts).
+  - Pass condition MUST be chosen deterministically from the baseline (e.g., if `failed > 0` then “Reduce failing tests by >= 1”; else an energy-budget/quality maintenance condition).
+
 #### Constitution Enforcement
 - The Tokimon Constitution at `docs/tokimon-constitution.md` is binding for all self-improve runs.
 - `src/self_improve/orchestrator.py:_entrypoint_prompt` must begin with a 1-paragraph Constitution Acknowledgement, then list the Immutable Invariants, and include the exact heading `## Evaluation Plan (Required)`.
 - Winner selection is deterministic and does not depend on completion order; if scores tie, the winner is the lowest `session_id` (lexicographic).
 - `src/self_improve/orchestrator.py:_report_to_markdown` must include the headings `## Constitution Acknowledgement`, `## Scoring Rubric`, `## Energy Budget`, and `## Audit Log`.
 - Energy budget reporting must include planned vs actual energy; actual energy is the sum of `(model_calls + tool_calls)` across all sessions in the report.
+- `src/self_improve/orchestrator.py:_entrypoint_prompt` and `src/self_improve/orchestrator.py:_report_to_markdown` MUST reflect the Evaluation-First Experiment Loop requirements above (baseline, post-change, delta, causal mechanism, pass condition).
 
 ## Repository Layout
 - Tokimon project root lives under `src/` in this repository.
