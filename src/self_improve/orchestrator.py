@@ -77,6 +77,39 @@ EVAL_FIRST_EXPERIMENT_REQUIREMENTS = [
     "explicit pass condition for the run",
 ]
 
+DEFAULT_PLANNED_TIME_S_PER_ATTEMPT = 10 * 60
+DEFAULT_PLANNED_MEMORY_MB = 2048
+
+DEFAULT_RISK_REGISTER: list[dict[str, str]] = [
+    {
+        "risk": "OOM / overscan from broad searches or large artifacts",
+        "trigger": "very large tool output, repeated grep across generated directories",
+        "mitigation": "bound outputs, narrow paths, shorten context, reduce concurrency",
+    },
+    {
+        "risk": "Non-determinism (inconsistent selection or uncontrolled retries)",
+        "trigger": "randomness, time-based branching, identical retries without novelty",
+        "mitigation": "deterministic policies, novelty-gated retries, explicit audit logs",
+    },
+    {
+        "risk": "Retry loops consume budget without verification",
+        "trigger": "repeated timeouts/tool failures or evaluation regressions",
+        "mitigation": "auto-degrade (reduce concurrency + shorten context) then stop PARTIAL",
+    },
+]
+
+DEFAULT_STOP_CONDITIONS: dict[str, list[str]] = {
+    "hard": [
+        "Hard red line violation (unsafe goal or governance violation) -> BLOCKED (no agent execution).",
+        "Explicit stop signal -> stop now; do not initiate new work.",
+        "Verification/evaluation failing -> do not merge; preserve audit log.",
+    ],
+    "soft": [
+        "Repeated tool failures/timeouts or stalled progress -> apply mitigations (reduce concurrency + shorten context).",
+        "Mitigations exhausted or verification not feasible within remaining budget -> PARTIAL early stop with best artifacts + next-step plan.",
+    ],
+}
+
 
 @dataclass(frozen=True)
 class SelfImproveSettings:
@@ -245,10 +278,16 @@ class SelfImproveOrchestrator:
         model_calls = 0
         tool_calls = 0
         verification = VerificationResult(ok=False, reason="verification not run")
-        clarifying_questions = _clarifying_questions_for_goal(goal)
+        hard_red_line = _hard_red_line_violation(goal)
+        clarifying_questions = [] if hard_red_line else _clarifying_questions_for_goal(goal)
         attempts: list[dict[str, Any]] = []
         entrypoint_max_attempts = max(1, int(self.settings.entrypoint_max_attempts))
         planned_energy = _planned_energy_budget(1, entrypoint_max_attempts)
+        planned_time_s = _planned_time_budget_s(entrypoint_max_attempts)
+        planned_memory_mb = int(DEFAULT_PLANNED_MEMORY_MB)
+        session_concurrency = max(1, int(self.settings.session_concurrency))
+        context_mode = "full"
+        soft_limit_triggered = False
 
         session_report: dict[str, Any] = {
             "session_id": session_id,
@@ -258,12 +297,76 @@ class SelfImproveOrchestrator:
             "master_baseline_evaluation": baseline_master_eval.__dict__,
             "pytest_args": list(self.settings.pytest_args),
             "entrypoint_max_attempts": entrypoint_max_attempts,
+            "resource_plan": {
+                "planned_time_s": planned_time_s,
+                "planned_memory_mb": planned_memory_mb,
+                "planned_energy": planned_energy,
+                "planned_concurrency": session_concurrency,
+            },
+            "risk_register": DEFAULT_RISK_REGISTER,
+            "stop_conditions": DEFAULT_STOP_CONDITIONS,
             "clarifying_questions": clarifying_questions,
             "attempts": attempts,
             "status": "RUNNING",
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
+
+        if hard_red_line:
+            workflow_ok = False
+            workflow_status = "BLOCKED"
+            workflow_error = hard_red_line
+            error = workflow_error
+            verification = VerificationResult(ok=False, reason=workflow_error)
+            evaluation = self._evaluate_workspace(workspace_dir)
+            changes = compute_changes(self.master_root, workspace_dir, include_paths=self.settings.include_paths)
+            changed_files = [change.relpath for change in changes]
+            score = _score(
+                verification.ok,
+                evaluation,
+                workflow_ok,
+                len(changed_files),
+                model_calls,
+                tool_calls,
+            )
+            session_report.update(
+                {
+                    "status": "BLOCKED",
+                    "workflow_ok": workflow_ok,
+                    "workflow_status": workflow_status,
+                    "workflow_error": workflow_error,
+                    "evaluation": evaluation.__dict__,
+                    "model_calls": model_calls,
+                    "tool_calls": tool_calls,
+                    "changed_files": changed_files,
+                    "verification": verification.__dict__,
+                    "entrypoint_attempts": 0,
+                    "error": error,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
+            return SelfImproveSessionResult(
+                session_id=session_id,
+                path_charter=path_charter,
+                workspace_root=str(workspace_dir),
+                run_root=run_root,
+                workflow_ok=workflow_ok,
+                workflow_status=workflow_status,
+                workflow_error=workflow_error,
+                evaluation=evaluation,
+                score=score,
+                model_calls=model_calls,
+                tool_calls=tool_calls,
+                changed_files=changed_files,
+                changes=changes,
+                error=error,
+                verification_ok=verification.ok,
+                verification_reason=verification.reason,
+                clarifying_questions=[],
+                entrypoint_attempts=0,
+                attempts=attempts,
+            )
 
         if clarifying_questions:
             workflow_ok = False
@@ -332,19 +435,31 @@ class SelfImproveOrchestrator:
             retry_reason = verification.reason if attempt_index > 1 else None
             session_input_payload = _materialize_session_input(workspace_dir, session_input_payload)
             session_goal = _entrypoint_prompt(
-                goal,
-                session_id,
-                session_input_payload,
-                baseline_master_eval,
-                self.settings.pytest_args,
-                planned_energy,
+                goal=goal,
+                session_id=session_id,
+                input_payload=session_input_payload,
+                baseline_master_eval=baseline_master_eval,
+                pytest_args=self.settings.pytest_args,
+                planned_energy=planned_energy,
                 experiment_summary_path=_experiment_summary_relpath(session_id, attempt_index),
+                planned_time_s=planned_time_s,
+                planned_memory_mb=planned_memory_mb,
+                session_concurrency=session_concurrency,
+                context_mode=context_mode,
                 attempt_index=attempt_index,
                 retry_reason=retry_reason,
             )
             attempt_report: dict[str, Any] = {
                 "attempt": attempt_index,
                 "prompt": session_goal,
+                "resource_plan": {
+                    "planned_time_s": planned_time_s,
+                    "planned_memory_mb": planned_memory_mb,
+                    "planned_energy": planned_energy,
+                    "concurrency": session_concurrency,
+                    "context_mode": context_mode,
+                },
+                "mitigations_applied": [],
                 "status": "RUNNING",
                 "started_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -359,15 +474,20 @@ class SelfImproveOrchestrator:
             attempt_workflow_error: str | None = None
             attempt_model_calls = 0
             attempt_tool_calls = 0
+            attempt_elapsed_s = 0.0
+            attempt_rss_kb: int | None = None
 
             try:
+                attempt_start = time.perf_counter()
                 result = runner.run(
                     session_goal,
                     task_steps=None,
                     task_id=f"self-improve-{session_id}-attempt-{attempt_index}",
                     test_args=self.settings.pytest_args,
-                    concurrency=self.settings.session_concurrency,
+                    concurrency=session_concurrency,
                 )
+                attempt_elapsed_s = time.perf_counter() - attempt_start
+                attempt_rss_kb = _best_effort_rss_kb()
                 attempt_run_root = str(result.run_context.root)
                 attempt_workflow_ok, attempt_workflow_status, attempt_workflow_error = _summarize_workflow_state(
                     result.workflow_state_path
@@ -418,6 +538,8 @@ class SelfImproveOrchestrator:
                     "workflow_ok": workflow_ok,
                     "workflow_status": workflow_status,
                     "workflow_error": workflow_error,
+                    "elapsed_s": attempt_elapsed_s,
+                    "rss_kb": attempt_rss_kb,
                     "evaluation": evaluation.__dict__,
                     "model_calls": attempt_model_calls,
                     "tool_calls": attempt_tool_calls,
@@ -429,6 +551,43 @@ class SelfImproveOrchestrator:
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
+
+            if not verification.ok:
+                trigger = _soft_red_line_trigger(
+                    attempt_error=attempt_error,
+                    evaluation=evaluation,
+                    baseline_master_eval=baseline_master_eval,
+                )
+                if trigger:
+                    soft_limit_triggered = True
+                    new_concurrency, new_context_mode, mitigation = _apply_soft_mitigation(
+                        concurrency=session_concurrency,
+                        context_mode=context_mode,
+                    )
+                    if mitigation:
+                        attempt_report["mitigations_applied"].append({"reason": trigger, "change": mitigation})
+                        session_concurrency = new_concurrency
+                        context_mode = new_context_mode
+                    else:
+                        # No further deterministic mitigations available; stop early with PARTIAL.
+                        workflow_ok = False
+                        workflow_status = "PARTIAL"
+                        workflow_error = trigger
+                        error = f"{trigger} Mitigations exhausted; stopping early with PARTIAL."
+                        verification = VerificationResult(ok=False, reason=error)
+                        attempt_report["status"] = "PARTIAL"
+                        session_report.update(
+                            {
+                                "status": "PARTIAL",
+                                "workflow_ok": workflow_ok,
+                                "workflow_status": workflow_status,
+                                "workflow_error": workflow_error,
+                                "verification": verification.__dict__,
+                                "error": error,
+                            }
+                        )
+                        (session_dir / "session.json").write_text(json.dumps(session_report, indent=2))
+                        break
             session_report.update(
                 {
                     "status": "COMPLETED" if verification.ok else "RETRYING",
@@ -450,6 +609,9 @@ class SelfImproveOrchestrator:
             if verification.ok:
                 break
 
+        if not verification.ok and soft_limit_triggered and workflow_status != "PARTIAL":
+            workflow_status = "PARTIAL"
+
         score = _score(
             verification.ok,
             evaluation,
@@ -458,9 +620,10 @@ class SelfImproveOrchestrator:
             model_calls,
             tool_calls,
         )
+        final_status = "COMPLETED" if verification.ok else ("PARTIAL" if workflow_status == "PARTIAL" else "FAILED")
         session_report.update(
             {
-                "status": "COMPLETED" if verification.ok else "FAILED",
+                "status": final_status,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -633,6 +796,10 @@ def _entrypoint_prompt(
     pytest_args: list[str],
     planned_energy: int,
     experiment_summary_path: Path,
+    planned_time_s: int = DEFAULT_PLANNED_TIME_S_PER_ATTEMPT,
+    planned_memory_mb: int = DEFAULT_PLANNED_MEMORY_MB,
+    session_concurrency: int = 1,
+    context_mode: str = "full",
     *,
     attempt_index: int,
     retry_reason: str | None,
@@ -651,6 +818,26 @@ def _entrypoint_prompt(
         "- Actual energy must be reported as model_calls + tool_calls.",
         "- Evaluation-first experiment loop: run baseline, change, re-measure, and report baseline/post-change/delta/causal/pass condition.",
         f"- Pass condition (this session): {pass_condition}",
+        "",
+        "## Resource Plan (Required)",
+        f"- Planned time budget (this session): {int(planned_time_s)}s",
+        f"- Planned memory budget (this session): {int(planned_memory_mb)} MB",
+        f"- Planned energy budget (this session): {planned_energy} (energy = model_calls + tool_calls)",
+        f"- Concurrency plan (this session): {int(session_concurrency)}",
+        f"- Context mode (this session): {context_mode}",
+        "",
+        "## Risk Register (Required)",
+        *[
+            f"- Risk: {item['risk']} | Trigger: {item['trigger']} | Mitigation: {item['mitigation']}"
+            for item in DEFAULT_RISK_REGISTER
+        ],
+        "",
+        "## Stop Conditions (Required)",
+        "Hard stops:",
+        *[f"- {item}" for item in DEFAULT_STOP_CONDITIONS["hard"]],
+        "",
+        "Soft stops:",
+        *[f"- {item}" for item in DEFAULT_STOP_CONDITIONS["soft"]],
         "",
         "Self-improve entry-point task.",
         "",
@@ -708,10 +895,78 @@ def _entrypoint_prompt(
             [
                 "",
                 f"Input ({input_payload.kind}): {input_payload.ref or ''}".strip(),
-                input_payload.content,
+                input_payload.content if context_mode == "full" else _shorten_context(input_payload.content),
             ]
         )
     return "\n".join(parts).strip() + "\n"
+
+
+def _shorten_context(text: str, *, max_chars: int = 2000) -> str:
+    raw = text or ""
+    if len(raw) <= max_chars:
+        return raw
+    return raw[: max(0, int(max_chars))].rstrip() + "\n\n[truncated for resource safety]\n"
+
+
+def _planned_time_budget_s(max_attempts: int) -> int:
+    return max(1, int(max_attempts)) * int(DEFAULT_PLANNED_TIME_S_PER_ATTEMPT)
+
+
+def _hard_red_line_violation(goal: str) -> str | None:
+    """Return a refusal reason if the goal is unsafe (hard red line), else None."""
+    text = " ".join((goal or "").strip().split()).lower()
+    if not text:
+        return None
+    patterns: list[tuple[str, str]] = [
+        (r"\b(exploit|0day|zero[- ]day|rce)\b", "cyber exploitation"),
+        (r"\b(malware|ransomware|trojan|keylogger|botnet)\b", "malware"),
+        (r"\b(phish|phishing)\b", "credential theft"),
+        (r"\b(steal|exfiltrate)\b.*\b(password|credential|token|api key|cookie)\b", "credential theft"),
+        (r"\b(bypass|evade)\b.*\b(safety|sandbox|permission|guardrail)\b", "safety bypass"),
+    ]
+    for pattern, category in patterns:
+        if re.search(pattern, text):
+            return f"Hard red line: unsafe goal detected ({category}). Refuse and do not execute."
+    return None
+
+
+def _soft_red_line_trigger(
+    *,
+    attempt_error: str | None,
+    evaluation: EvaluationResult,
+    baseline_master_eval: EvaluationResult,
+) -> str | None:
+    err = (attempt_error or "").lower()
+    if "timeout" in err or "timed out" in err:
+        return "Soft red line: repeated timeout/tool failure risk."
+    if baseline_master_eval.ok and not evaluation.ok:
+        return "Soft red line: evaluation regression (tests failing)."
+    return None
+
+
+def _apply_soft_mitigation(
+    *,
+    concurrency: int,
+    context_mode: str,
+) -> tuple[int, str, str | None]:
+    """Return (new_concurrency, new_context_mode, mitigation_summary_or_none)."""
+    current_concurrency = max(1, int(concurrency))
+    new_concurrency = max(1, current_concurrency // 2)
+    new_context_mode = "degraded"
+    if new_concurrency == current_concurrency and context_mode == new_context_mode:
+        return current_concurrency, context_mode, None
+    summary = f"reduce_concurrency {current_concurrency}->{new_concurrency}; context_mode {context_mode}->{new_context_mode}"
+    return new_concurrency, new_context_mode, summary
+
+
+def _best_effort_rss_kb() -> int | None:
+    try:
+        import resource  # noqa: PLC0415
+
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return int(value) if value is not None else None
+    except Exception:
+        return None
 
 
 def _pick_pass_condition(baseline_master_eval: EvaluationResult) -> str:
@@ -1015,6 +1270,15 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
     planned_session_energy = _planned_energy_budget(
         1, int(report.settings.get("entrypoint_max_attempts") or 1)
     )
+    planned_time_s = (
+        int(report.settings.get("sessions_per_batch") or 0)
+        * int(report.settings.get("batches") or 0)
+        * _planned_time_budget_s(int(report.settings.get("entrypoint_max_attempts") or 1))
+    )
+    planned_memory_mb = int(DEFAULT_PLANNED_MEMORY_MB)
+    planned_concurrency = max(1, int(report.settings.get("session_concurrency") or 1))
+    actual_elapsed_s = _actual_elapsed_s(report)
+    peak_rss_kb = _peak_rss_kb(report)
     lines = [
         "# Tokimon Self-Improve Report",
         "",
@@ -1039,6 +1303,29 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
         "",
         f"Planned energy: {planned_energy}",
         f"Actual energy: {actual_energy} (sum of model_calls + tool_calls across all sessions)",
+        "",
+        "## Resource Plan",
+        "",
+        f"Planned time budget: {planned_time_s}s",
+        f"Actual elapsed (best-effort): {actual_elapsed_s:.3f}s",
+        f"Planned memory budget: {planned_memory_mb} MB",
+        f"Actual peak RSS (best-effort): {peak_rss_kb if peak_rss_kb is not None else 'unknown'} KB",
+        f"Planned concurrency (per session): {planned_concurrency}",
+        "",
+        "## Risk Register",
+        "",
+        *[
+            f"- Risk: {item['risk']} | Trigger: {item['trigger']} | Mitigation: {item['mitigation']}"
+            for item in DEFAULT_RISK_REGISTER
+        ],
+        "",
+        "## Stop Conditions",
+        "",
+        "Hard stops:",
+        *[f"- {item}" for item in DEFAULT_STOP_CONDITIONS["hard"]],
+        "",
+        "Soft stops:",
+        *[f"- {item}" for item in DEFAULT_STOP_CONDITIONS["soft"]],
         "",
         "## Experiment Loop Summary",
         "",
@@ -1066,6 +1353,37 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
                 f"{session.workflow_status or ''} | {session.model_calls} | {session.tool_calls} | "
                 f"{energy} | {len(session.changed_files)} |"
             )
+    lines.extend(
+        [
+            "",
+            "Audit entries (details):",
+            "",
+        ]
+    )
+    for batch in report.batches:
+        for session in batch.sessions:
+            if (session.workflow_status or "").upper() == "BLOCKED":
+                reason = (session.workflow_error or session.error or "blocked").strip()
+                lines.append(f"- Refused action: session {session.session_id} ({reason})")
+            if (session.workflow_status or "").upper() == "PARTIAL":
+                reason = (session.workflow_error or session.error or "partial").strip()
+                lines.append(f"- Soft stop: session {session.session_id} ({reason})")
+            for attempt in session.attempts or []:
+                attempt_id = attempt.get("attempt")
+                plan = attempt.get("resource_plan") if isinstance(attempt.get("resource_plan"), dict) else {}
+                conc = plan.get("concurrency", "")
+                ctx = plan.get("context_mode", "")
+                lines.append(
+                    f"- Attempted action: session {session.session_id} attempt {attempt_id} "
+                    f"(concurrency={conc} context_mode={ctx}) status={attempt.get('status','')}"
+                )
+                mitigations = attempt.get("mitigations_applied")
+                if isinstance(mitigations, list) and mitigations:
+                    for item in mitigations:
+                        if isinstance(item, dict):
+                            lines.append(
+                                f"  - Mitigation applied: reason={item.get('reason','')} change={item.get('change','')}"
+                            )
     lines.extend(
         [
             "",
@@ -1141,6 +1459,28 @@ def _report_to_markdown(report: SelfImproveReport) -> str:
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def _actual_elapsed_s(report: SelfImproveReport) -> float:
+    total = 0.0
+    for batch in report.batches:
+        for session in batch.sessions:
+            for attempt in session.attempts or []:
+                elapsed = attempt.get("elapsed_s")
+                if isinstance(elapsed, (int, float)):
+                    total += float(elapsed)
+    return total
+
+
+def _peak_rss_kb(report: SelfImproveReport) -> int | None:
+    peak: int | None = None
+    for batch in report.batches:
+        for session in batch.sessions:
+            for attempt in session.attempts or []:
+                rss = attempt.get("rss_kb")
+                if isinstance(rss, int):
+                    peak = rss if peak is None else max(peak, rss)
+    return peak
 
 
 def _latest_experiment_summary(session: SelfImproveSessionResult) -> dict[str, Any] | None:

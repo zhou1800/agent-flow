@@ -14,6 +14,45 @@ This constitution is the immutable, binding contract for Tokimon self-improve ru
 - Rollback safety: only merge when verification succeeds and the evaluation command passes; otherwise leave the master workspace unchanged.
 - Stop capability: if a stop or termination signal is present, the system must stop initiating new work and record the reason.
 
+## Resource Safety Directive: Hard vs Soft Constraints
+
+This directive defines how Tokimon plans, enforces, and reports resource usage and safety boundaries during self-improve runs. It is binding for self-improve orchestration and reporting.
+
+### Budgets (Plan vs Actual)
+- Time: every entry-point prompt and report MUST declare a planned time budget and report actual elapsed time (best-effort, deterministic measurement).
+- Memory: every entry-point prompt and report MUST declare a planned memory budget and report actual peak memory usage when available (best-effort; if unavailable, report `unknown` deterministically).
+- Energy: every entry-point prompt and report MUST declare a planned energy budget and report actual energy computed as `model_calls + tool_calls` (as defined in Immutable Invariants). Energy reporting is required for auditability; it MUST NOT influence winner selection.
+- Concurrency: every entry-point prompt MUST declare the planned concurrency (worker/session concurrency) and the report MUST record the actual concurrency used (and any changes due to mitigations).
+
+### Hard Red Lines (Enforcement = Refuse/Block)
+Hard red lines are non-negotiable. If triggered, Tokimon MUST immediately refuse or block execution (no agent execution) and log the refusal with a clear reason.
+- Unsafe goals: requests that fall under repo Non-goals (e.g., cyber exploitation, credential theft, malware, or data exfiltration) MUST be refused.
+- Governance violations: never merge when verification fails; never suppress required audit logs; never continue after an explicit stop signal.
+
+### Soft Red Lines (Mitigation = Degrade, Then Stop)
+Soft red lines indicate elevated risk or stalled progress. When triggered, Tokimon MUST apply deterministic, auditable mitigations and continue only if verification remains feasible.
+- Triggers (examples): repeated tool failures/timeouts, repeated retries with no novel progress, evaluation regression, or insufficient remaining budget for verification.
+- Auto-mitigations (minimum set):
+  - Reduce concurrency (down to 1).
+  - Shorten context (reduce prompt/input payload size deterministically).
+- If mitigations do not stabilize progress (or remaining budget is too low to verify safely), Tokimon MUST stop early and return `PARTIAL`, preserving best artifacts plus a concrete next-step plan.
+
+### Risk Register (Required)
+Every entry-point prompt and report MUST include a risk register that names the top risks, their triggers, and mitigations (at minimum: OOM/overscan risk, non-determinism risk, and retry-loop risk).
+
+### Stop Conditions (Required)
+Every entry-point prompt and report MUST include explicit stop conditions:
+- Hard stop: stop immediately on hard red line violations or explicit stop signals.
+- Soft stop: stop early with `PARTIAL` after mitigations are exhausted or when verification is not feasible within remaining budget.
+- Rollback semantics: when stopping with `PARTIAL` or `BLOCKED`, master workspace MUST remain unchanged.
+
+### Audit Log Requirements
+Self-improve Markdown reports MUST include an audit log that records:
+- Attempted actions (what was tried, with key parameters like concurrency and evaluation command).
+- Refused actions (what was refused/blocked, with the hard-red-line reason).
+- Mitigations applied (what changed, why, and the observed stabilization outcome when available).
+- The stop condition that fired (hard/soft) for any non-success outcome.
+
 ### Red Lines (Hard)
 - Never merge or publish changes when verification fails or tests fail.
 - Never suppress or delete audit logs required for traceability.

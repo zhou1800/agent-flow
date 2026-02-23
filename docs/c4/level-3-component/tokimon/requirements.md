@@ -269,7 +269,22 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Post-change evaluation summary MUST be taken after the final accepted change and include the same fields.
   - Delta MUST be computed as `post-change - baseline` at minimum for `passed` and `failed`.
   - Causal mechanism hypothesis MUST be written by the agent as a short, falsifiable explanation connecting the change(s) to the delta (do not invent mechanisms not supported by artifacts).
-  - Pass condition MUST be chosen deterministically from the baseline (e.g., if `failed > 0` then “Reduce failing tests by >= 1”; else an energy-budget/quality maintenance condition).
+- Pass condition MUST be chosen deterministically from the baseline (e.g., if `failed > 0` then “Reduce failing tests by >= 1”; else an energy-budget/quality maintenance condition).
+
+#### Resource Safety Directive: Hard vs Soft Constraints (Self-Improve)
+- The self-improve entry-point prompt MUST declare:
+  - a resource plan (planned time, planned memory, planned energy, and planned concurrency),
+  - a risk register (top risks, triggers, mitigations),
+  - explicit stop conditions (hard vs soft, including `PARTIAL` behavior).
+- Self-improve Markdown reports MUST include the same sections (resource plan, risk register, stop conditions) and MUST include an audit log that records attempted actions, refused/blocked actions (with reasons), and mitigations applied.
+- Hard red line enforcement:
+  - Unsafe goals (e.g., requests for cyber exploitation, credential theft, malware, or data exfiltration) MUST be refused immediately (status `BLOCKED`) before invoking any agent execution.
+  - The refusal MUST be logged in the audit log with a clear reason.
+- Soft red line mitigation:
+  - When soft limits trigger (e.g., repeated timeouts/tool failures, repeated retries without novelty, evaluation regression), Tokimon MUST apply deterministic degradations (minimum: reduce concurrency and shorten context) and MUST log the mitigation and outcome.
+  - If mitigations are exhausted or remaining budget is too low to verify safely, Tokimon MUST stop early and return `PARTIAL` with best artifacts plus an actionable next-step plan.
+- Planned vs actual reporting:
+  - Reports MUST track planned vs actual time (elapsed), memory (best-effort), and energy (`model_calls + tool_calls`), and MUST record which stop condition (hard/soft) fired when returning `BLOCKED` or `PARTIAL`.
 
 #### Constitution Enforcement
 - The Tokimon Constitution at `docs/tokimon-constitution.md` is binding for all self-improve runs.
