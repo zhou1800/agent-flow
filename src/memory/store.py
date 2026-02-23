@@ -3,10 +3,58 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+_CHARTER_REQUIRED_FIELDS = (
+    "failure_signature",
+    "root_cause_hypothesis",
+    "strategy_change",
+    "evidence_of_novelty",
+    "retrieval_tags",
+)
+
+_SECRET_METADATA_KEY_PATTERN = re.compile(r"(api[_-]?key|secret|token|password)", re.IGNORECASE)
+_BEARER_TOKEN_PATTERN = re.compile(r"(Authorization\s*:\s*Bearer\s+)(\S+)", re.IGNORECASE)
+
+
+def _is_empty_field(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _validate_lesson_charter(metadata: dict[str, Any]) -> None:
+    lesson_type = metadata.get("lesson_type")
+    if lesson_type not in {"failure", "retry"}:
+        return
+
+    missing = [field for field in _CHARTER_REQUIRED_FIELDS if field not in metadata or _is_empty_field(metadata.get(field))]
+    if missing:
+        raise ValueError(f"Lesson metadata missing required charter fields: {', '.join(missing)}")
+
+
+def _deny_secret_metadata(metadata: dict[str, Any]) -> None:
+    for key, value in metadata.items():
+        if not isinstance(key, str):
+            continue
+        if not _SECRET_METADATA_KEY_PATTERN.search(key):
+            continue
+        if _is_empty_field(value):
+            continue
+        raise ValueError(f"Secret metadata is not allowed in Lesson: {key}")
+
+
+def _redact_secrets_in_body(body: str) -> str:
+    return _BEARER_TOKEN_PATTERN.sub(r"\1<REDACTED>", body)
 
 
 @dataclass
@@ -50,6 +98,9 @@ class MemoryStore:
         lesson_id = metadata.get("id") or metadata.get("lesson_id")
         if not lesson_id:
             raise ValueError("Lesson metadata must include an 'id'")
+        _validate_lesson_charter(metadata)
+        _deny_secret_metadata(metadata)
+        body = _redact_secrets_in_body(body)
         path = self.lessons_dir / f"lesson-{lesson_id}.md"
         header = json.dumps(metadata, sort_keys=True)
         content = f"{header}\n---\n{body}\n"
@@ -130,26 +181,54 @@ class MemoryStore:
         tags = tags or []
         conn = sqlite3.connect(self.index_path)
         try:
-            rows = _search(conn, query, tags=tags, component=component, failure_signature=failure_signature, limit=limit)
-            if stage == 2:
-                if len(rows) < limit and tags:
-                    rows += _search(
+            if stage == 1:
+                rows = _select_lessons(
+                    conn,
+                    query=query,
+                    tags=tags,
+                    components=[component] if component else None,
+                    failure_signature=failure_signature,
+                    limit=limit,
+                )
+            elif stage == 2:
+                stage2_components: list[str] = []
+                if component:
+                    stage2_components.append(component)
+                    stage2_components.extend(
+                        _adjacent_components(conn, component=component, current_failure_signature=failure_signature)
+                    )
+                rows = _select_lessons(
+                    conn,
+                    query=None,
+                    tags=tags,
+                    components=stage2_components or None,
+                    failure_signature=failure_signature,
+                    limit=limit,
+                )
+            else:
+                stage2_components = []
+                if component:
+                    stage2_components.append(component)
+                    stage2_components.extend(
+                        _adjacent_components(conn, component=component, current_failure_signature=failure_signature)
+                    )
+                rows = _select_lessons(
+                    conn,
+                    query=None,
+                    tags=tags,
+                    components=stage2_components or None,
+                    failure_signature=failure_signature,
+                    limit=limit,
+                )
+                if len(rows) < limit and failure_signature:
+                    rows += _select_lessons(
                         conn,
-                        " ".join(tags),
-                        tags=tags,
-                        component=component,
+                        query=None,
+                        tags=None,
+                        components=None,
                         failure_signature=failure_signature,
                         limit=limit - len(rows),
                     )
-            elif stage != 1 and len(rows) < limit and failure_signature:
-                rows += _search(
-                    conn,
-                    failure_signature,
-                    tags=tags,
-                    component=component,
-                    failure_signature=failure_signature,
-                    limit=limit - len(rows),
-                )
             lessons = []
             seen = set()
             for row in rows:
@@ -161,6 +240,64 @@ class MemoryStore:
             return lessons
         finally:
             conn.close()
+
+
+def _adjacent_components(
+    conn: sqlite3.Connection, *, component: str, current_failure_signature: str | None
+) -> list[str]:
+    if not current_failure_signature:
+        return []
+    cursor = conn.execute(
+        "SELECT DISTINCT failure_signature FROM lessons WHERE component = ? AND failure_signature <> ?",
+        (component, current_failure_signature),
+    )
+    other_failure_signatures = [row[0] for row in cursor.fetchall() if row[0]]
+    if not other_failure_signatures:
+        return []
+
+    placeholders = ",".join("?" for _ in other_failure_signatures)
+    cursor = conn.execute(
+        f"SELECT DISTINCT component FROM lessons WHERE failure_signature IN ({placeholders}) AND component <> ?",
+        [*other_failure_signatures, component],
+    )
+    return [row[0] for row in cursor.fetchall() if row[0]]
+
+
+def _select_lessons(
+    conn: sqlite3.Connection,
+    *,
+    query: str | None,
+    tags: list[str] | None,
+    components: list[str] | None,
+    failure_signature: str | None,
+    limit: int,
+) -> list[tuple]:
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if components is not None:
+        if not components:
+            return []
+        placeholders = ",".join("?" for _ in components)
+        clauses.append(f"component IN ({placeholders})")
+        params.extend(components)
+
+    if failure_signature:
+        clauses.append("failure_signature = ?")
+        params.append(failure_signature)
+
+    if tags:
+        for tag in tags:
+            clauses.append("tags LIKE ?")
+            params.append(f"%{tag}%")
+
+    if query:
+        clauses.append("body LIKE ?")
+        params.append(f"%{query}%")
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    cursor = conn.execute(f"SELECT id FROM lessons {where} LIMIT ?", [*params, limit])
+    return cursor.fetchall()
 
 
 def _search(conn: sqlite3.Connection, query: str, tags: list[str], component: str | None,

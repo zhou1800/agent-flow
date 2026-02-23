@@ -7,9 +7,11 @@ This document maps requirements to automated tests.
 - Workflow early termination: when a worker signals `metrics.terminate_workflow`, remaining steps are marked skipped and are not executed.
 - Planner workflow generation: Planner output is converted into a multi-step workflow when provided.
 - Retry novelty gating: refuse identical retry without a Lesson and changed strategy.
+- Memory-informed retry gate: consult retrieved Lessons and stop or force a strategy change when repeating a known failed pattern without novelty (see `src/tests/test_retry_gate.py`).
 - Failure signature de-dup: detect repeated failures via hash (task_id, call_signature, failure_signature).
 - Cycle detection: detect delegation cycles and repeated subtrees without new artifacts.
-- Memory staged retrieval: Stage 1/2/3 selection logic with deterministic lexical index.
+- Memory staged retrieval: Stage 1/2/3 selection logic with deterministic lexical index, requiring `component`, `retrieval_tags`, and `failure_signature` inputs (see `src/tests/test_memory_retrieval.py`).
+- Memory charter: Lesson schema validation for `lesson_type in {failure,retry}` and deterministic secret redaction/denial (see `src/tests/test_memory_charter.py`).
 - Dynamic skill registration: register only after tests pass; hot reload behavior.
 - Parallel execution correctness: basic ordering, backpressure, and cancellation.
 - CLI auto routing: `tokimon auto "<prompt>"` uses an LLM router to produce a validated argv list (tests stub the router/LLM for determinism and cover fallback to heuristic routing) (see `src/tests/test_cli_auto.py`).

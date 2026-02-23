@@ -17,3 +17,5 @@ This document tracks prioritized follow-up work to reduce OOM risk and improve r
    - Acceptance criteria: Batch report shows a bounded list of `failing_tests` for baseline and winner post-change evaluations to make deltas auditable.
 7. [ ] Self-improve: parallel exploration protocol (Owner: TBD)
    - Acceptance criteria: Deterministic per-session `path_charter`, enforced per-attempt experiment summary fields (`plan`, `path_charter`, `self_critique`, `lessons` + experiment-loop fields), report includes diversity check + scoring function + per-path comparison + loser reasons/Lessons, and deterministic winner selection aligned with the Constitution.
+8. [ ] Self-improve: Memory-as-Asset charter (Owner: TBD)
+   - Acceptance criteria: Persist Lessons for failure/retry decisions with required fields, deny/redact secrets deterministically, and use staged retrieval to stop or force strategy changes on repeated failures.
