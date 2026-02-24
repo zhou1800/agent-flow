@@ -13,13 +13,13 @@ This document tracks prioritized follow-up work to reduce OOM risk and improve r
 5. [x] Self-improve: enforce evaluation-first experiment reporting (Owner: TBD)
    - Acceptance criteria: Self-improve prompts and reports always include baseline/post-change/delta, causal mechanism hypothesis, and an explicit pass condition (including planned vs actual energy).
    - Follow-up complete: Winner causal mechanism hypothesis is now loaded from per-attempt experiment JSON and rendered directly in the top-level batch report.
-6. [ ] Self-improve: include failing test IDs in baseline/post-change summaries (Owner: TBD)
+6. [x] Self-improve: include failing test IDs in baseline/post-change summaries (Owner: TBD)
    - Acceptance criteria: Batch report shows a bounded list of `failing_tests` for baseline and winner post-change evaluations to make deltas auditable.
-7. [ ] Self-improve: parallel exploration protocol (Owner: TBD)
+7. [x] Self-improve: parallel exploration protocol (Owner: TBD)
    - Acceptance criteria: Deterministic per-session `path_charter`, enforced per-attempt experiment summary fields (`plan`, `path_charter`, `self_critique`, `lessons` + experiment-loop fields), report includes diversity check + scoring function + per-path comparison + loser reasons/Lessons, and deterministic winner selection aligned with the Constitution.
 8. [ ] Self-improve: Memory-as-Asset charter (Owner: TBD)
    - Acceptance criteria: Persist Lessons for failure/retry decisions with required fields, deny/redact secrets deterministically, and use staged retrieval to stop or force strategy changes on repeated failures.
-9. [ ] Skill Asset Protocol: Prompt Skills + Code Skills with metadata (Owner: TBD)
+9. [x] Skill Asset Protocol: Prompt Skills + Code Skills with metadata (Owner: TBD)
    - Acceptance criteria: Detect skill gaps (repeat subtask patterns, repeat retry failures, repeat tool workflows), require metadata for both Prompt Skills and Code Skills, keep failing skills as candidate drafts + record Lessons, and register only on passing validation with sprawl/safety guardrails.
-10. [ ] Self-improve: Resource Safety Directive (Hard vs Soft Constraints) (Owner: TBD)
+10. [x] Self-improve: Resource Safety Directive (Hard vs Soft Constraints) (Owner: TBD)
    - Acceptance criteria: Entrypoint prompt + report include resource plan/risk register/stop conditions; hard red lines refuse unsafe goals pre-execution with audit log; soft red lines auto-mitigate (reduce concurrency + shorten context) and return PARTIAL early-stop when verification is not feasible; planned vs actual time/memory/energy reported with stop condition fired.
