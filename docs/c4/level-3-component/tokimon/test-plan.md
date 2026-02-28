@@ -63,6 +63,11 @@ This document maps requirements to automated tests.
   - Send a `connect` request and then validate `health` and `send` responses.
   - Shut the server down cleanly (see `src/tests/test_gateway_ws.py`).
 
+- CLI health smoke test:
+  - Start `GatewayServer` on an ephemeral port.
+  - Assert `tokimon health --json --url ws://<host>:<port>/gateway` returns `{"ok": true}` and exits 0.
+  - Assert an unreachable port returns `{"ok": false}` and a non-zero exit code (see `src/tests/test_health.py`).
+
 - Self-improvement batch:
   - Creates multiple isolated session workspaces from a master root.
   - Uses `git worktree` (detached HEAD) for all session workspaces and aborts with an actionable error when the master is not a clean git checkout.

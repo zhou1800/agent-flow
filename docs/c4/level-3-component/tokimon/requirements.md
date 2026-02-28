@@ -182,7 +182,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Metrics include at least: pass/fail counts, wall time, model calls, tool calls, and Lessons produced.
 
 ### CLI
-- Commands: auto, run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui, gateway, doctor.
+- Commands: auto, run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui, gateway, doctor, health.
 - Prompt-driven entrypoint: `tokimon auto "<prompt>"` routes to the appropriate mode by asking an AI router (Codex/Claude) to return a concrete Tokimon argv list.
   - Output contract: the router returns JSON containing `argv: string[]` (argv excludes the leading `tokimon`).
   - Validation: Tokimon MUST validate the router argv against the CLI parser (unknown commands/options are rejected) and MUST prevent `auto` recursion.
@@ -197,6 +197,21 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
     - Codex CLI availability: `codex` on PATH and `codex --version` succeeds.
     - Port availability: report availability/conflicts for Chat UI default port 8765 and Gateway default port 8765.
     - Required docs present: `AGENTS.md`, `docs/helix.md`, `docs/repository-guidelines.md`.
+
+- Health (OpenClaw-inspired, Phase 1): `tokimon health` checks a running Tokimon Gateway's WebSocket `health` RPC and exits non-zero on failure.
+  - Flags:
+    - `--url` (default: `ws://127.0.0.1:8765/gateway`)
+    - `--timeout-ms`
+    - `--json` emits stable machine-readable JSON: `{ok, url, elapsed_ms, error, details}`
+    - `--verbose` prints additional diagnostic steps (must not break `--json` output).
+  - Protocol:
+    - Connect to the Gateway WebSocket endpoint.
+    - Receive the `connect.challenge` event.
+    - Send a `connect` request with `minProtocol=1`, `maxProtocol=1`, plus `client`, `role`, and `scopes`.
+    - Send a `health` request and require an `ok:true` response with payload `{ok:true}`.
+  - Exit codes:
+    - `0` when the Gateway health is ok.
+    - `1` otherwise.
 
 ### Chat UI
 - `tokimon chat-ui` starts a local web server (binds loopback by default) that serves a single-page chat UI.

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TextIO
 
 from chat_ui.server import ChatUIConfig, run_chat_ui
+from gateway.health_client import check_gateway_health
 from gateway.server import GatewayConfig, run_gateway
 from benchmarks.harness import EvaluationHarness
 from llm.client import (
@@ -103,6 +104,12 @@ def build_parser(*, exit_on_error: bool = True) -> argparse.ArgumentParser:
     doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     doctor.add_argument("--repair", "--fix", dest="repair", action="store_true", help="Attempt safe, non-destructive repairs.")
 
+    health = subparsers.add_parser("health")
+    health.add_argument("--url", default="ws://127.0.0.1:8765/gateway", help="Gateway WebSocket URL.")
+    health.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    health.add_argument("--verbose", action="store_true", help="Print additional diagnostics.")
+    health.add_argument("--timeout-ms", type=int, default=2_000, help="Overall timeout in milliseconds.")
+
     return parser
 
 
@@ -141,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_gateway(args)
         case "doctor":
             return _cmd_doctor(args, workspace_root)
+        case "health":
+            return _cmd_health(args)
         case _:
             return 1
 
@@ -306,6 +315,34 @@ def _cmd_doctor(args: argparse.Namespace, workspace_root: Path) -> int:
         return 0 if report.ok else 1
     sys.stdout.write(render_human(report))
     return 0 if report.ok else 1
+
+
+def _cmd_health(args: argparse.Namespace) -> int:
+    url = str(getattr(args, "url", "") or "").strip()
+    timeout_ms = int(getattr(args, "timeout_ms", 2_000) or 2_000)
+    verbose = bool(getattr(args, "verbose", False))
+
+    def log(message: str) -> None:
+        sys.stderr.write(message)
+        sys.stderr.write("\n")
+
+    report = check_gateway_health(url, timeout_ms=timeout_ms, log=log if verbose else None)
+
+    if getattr(args, "json", False):
+        _write_line(sys.stdout, json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["ok"] else 1
+
+    if report["ok"]:
+        _write_line(sys.stdout, f"ok ({report['elapsed_ms']} ms)")
+        return 0
+
+    error = report.get("error") or "health check failed"
+    _write_line(sys.stdout, f"error: {error}")
+    if verbose:
+        details = report.get("details")
+        if isinstance(details, dict) and details:
+            _write_line(sys.stdout, json.dumps(details, indent=2, sort_keys=True))
+    return 1
 
 
 def _write_line(stream: TextIO, text: str) -> None:
