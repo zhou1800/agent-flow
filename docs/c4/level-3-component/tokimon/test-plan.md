@@ -54,6 +54,14 @@ This document maps requirements to automated tests.
   - Assert `POST /api/send` with a simple message returns a structured JSON reply.
   - Shut the server down cleanly.
 
+- Gateway smoke test (mock model):
+  - Start `tokimon gateway` (or `GatewayServer`) on an ephemeral port.
+  - Assert `GET /healthz` returns `{"ok": true}`.
+  - Establish a WebSocket connection to `/gateway`.
+  - Assert the server emits `connect.challenge`.
+  - Send a `connect` request and then validate `health` and `send` responses.
+  - Shut the server down cleanly (see `src/tests/test_gateway_ws.py`).
+
 - Self-improvement batch:
   - Creates multiple isolated session workspaces from a master root.
   - Uses `git worktree` (detached HEAD) for all session workspaces and aborts with an actionable error when the master is not a clean git checkout.

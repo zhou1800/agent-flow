@@ -182,7 +182,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Metrics include at least: pass/fail counts, wall time, model calls, tool calls, and Lessons produced.
 
 ### CLI
-- Commands: auto, run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui.
+- Commands: auto, run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui, gateway.
 - Prompt-driven entrypoint: `tokimon auto "<prompt>"` routes to the appropriate mode by asking an AI router (Codex/Claude) to return a concrete Tokimon argv list.
   - Output contract: the router returns JSON containing `argv: string[]` (argv excludes the leading `tokimon`).
   - Validation: Tokimon MUST validate the router argv against the CLI parser (unknown commands/options are rejected) and MUST prevent `auto` recursion.
@@ -196,6 +196,22 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - Chat endpoint: `POST /api/send` accepts JSON `{message: string, history?: [{role, content}]}` and returns a structured JSON reply including `status` and a human-readable assistant message (in `reply` or `summary`).
 - The chat handler uses the same tool set as the hierarchical runner (file, grep, patch, pytest, web).
 - Default LLM provider is `mock`; `--llm codex` / `--llm claude` (or `TOKIMON_LLM=codex|claude`) enables the corresponding CLI-backed client.
+
+### Gateway Server (OpenClaw-Inspired, Phase 1)
+- `tokimon gateway` starts a local server that supports:
+  - Existing Chat UI HTTP endpoints: `GET /healthz`, `POST /api/send`
+  - A WebSocket control-plane endpoint at `GET /gateway` (WS upgrade)
+- The WebSocket endpoint uses a minimal OpenClaw-inspired framing:
+  - Request: `{type:"req", id, method, params}`
+  - Response: `{type:"res", id, ok, payload|error}`
+  - Event: `{type:"event", event, payload}`
+- Handshake:
+  - On socket open, the server emits `connect.challenge`.
+  - The first client request MUST be `connect` and MUST pass protocol version validation.
+- Phase 1 methods:
+  - `health`: returns `{ok:true}`
+  - `send`: invokes the same logic as `/api/send` and requires an idempotency key.
+- The Gateway protocol surface and Phase 2 TODOs are documented in `docs/gateway.md`.
 
 ### Self-Improvement Mode (Multi-Session / Batch)
 - When invoked with a self-improvement goal, the system can accept optional “inputs”:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TextIO
 
 from chat_ui.server import ChatUIConfig, run_chat_ui
+from gateway.server import GatewayConfig, run_gateway
 from benchmarks.harness import EvaluationHarness
 from llm.client import (
     ClaudeCLIClient,
@@ -87,6 +88,17 @@ def build_parser(*, exit_on_error: bool = True) -> argparse.ArgumentParser:
     )
     chat_ui.add_argument("--workspace", default=None, help=argparse.SUPPRESS)
 
+    gateway = subparsers.add_parser("gateway")
+    gateway.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
+    gateway.add_argument("--port", type=int, default=8765)
+    gateway.add_argument(
+        "--llm",
+        choices=["mock", "codex", "claude"],
+        default=os.environ.get("TOKIMON_LLM", "mock"),
+        help=argparse.SUPPRESS,
+    )
+    gateway.add_argument("--workspace", default=None, help=argparse.SUPPRESS)
+
     return parser
 
 
@@ -121,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_self_improve(args)
         case "chat-ui":
             return _cmd_chat_ui(args)
+        case "gateway":
+            return _cmd_gateway(args)
         case _:
             return 1
 
@@ -261,6 +275,18 @@ def _cmd_chat_ui(args: argparse.Namespace) -> int:
         workspace_dir=workspace_dir,
     )
     run_chat_ui(config)
+    return 0
+
+
+def _cmd_gateway(args: argparse.Namespace) -> int:
+    workspace_dir = Path(args.workspace).resolve() if args.workspace else Path.cwd().resolve()
+    config = GatewayConfig(
+        host=str(args.host),
+        port=int(args.port),
+        llm_provider=str(args.llm),
+        workspace_dir=workspace_dir,
+    )
+    run_gateway(config)
     return 0
 
 
