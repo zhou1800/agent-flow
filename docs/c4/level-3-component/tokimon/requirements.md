@@ -141,6 +141,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - Workers may request early workflow termination by setting:
   - `metrics.terminate_workflow: true` (and optional `metrics.terminate_reason`)
   - The runner marks remaining steps as `SKIPPED` and completes the workflow when safe to do so.
+  - Termination signals are ignored for baseline evaluation steps (`step_id` starting with `baseline`) to avoid skipping planned work based solely on a clean baseline.
 
 #### Planner Output Contract (Goal → Workflow)
 - The Planner may return a multi-step workflow in either of these shapes:

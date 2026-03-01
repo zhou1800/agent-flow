@@ -5,6 +5,7 @@ This document maps requirements to automated tests.
 ## Unit Tests
 - Workflow persistence and resume: serialize/deserialize DAG state and resume execution.
 - Workflow early termination: when a worker signals `metrics.terminate_workflow`, remaining steps are marked skipped and are not executed.
+- Workflow termination baseline guard: `metrics.terminate_workflow` is ignored for baseline steps (step id starts with `baseline`) so clean baselines do not skip planned work.
 - Planner workflow generation: Planner output is converted into a multi-step workflow when provided.
 - Retry novelty gating: refuse identical retry without a Lesson and changed strategy.
 - Memory-informed retry gate: consult retrieved Lessons and stop or force a strategy change when repeating a known failed pattern without novelty (see `src/tests/test_retry_gate.py`).

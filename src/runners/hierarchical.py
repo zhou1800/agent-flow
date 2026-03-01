@@ -305,6 +305,15 @@ class HierarchicalRunner:
                     terminate_reason = str(control.get("reason") or control.get("terminate_reason") or "")
             terminate_reason = str(output.metrics.get("terminate_reason") or terminate_reason or "")
 
+        if terminate_workflow and step_id.startswith("baseline"):
+            log_to_file(worker_log, "Ignoring terminate_workflow signal from baseline step")
+            trace.log(
+                "terminate_workflow_ignored",
+                {"step_id": step_id, "reason": terminate_reason.strip()},
+            )
+            terminate_workflow = False
+            terminate_reason = ""
+
         tests_green = True
         if isinstance(pytest_metrics, dict):
             returncode = pytest_metrics.get("returncode")
