@@ -39,6 +39,24 @@ This document records the rules, conventions, and guardrails that govern work ac
 - Stub or record external system calls (APIs, databases, cloud services) unless the spec explicitly requires live requests. Document any credentials or fixtures needed for local runs and how they are sourced.
 - Record deterministic reproduction commands in task responses, including relevant environment variables.
 
+## Frontend (Chat UI)
+- Install dependencies:
+  ```bash
+  cd ui && npm install
+  ```
+- Dev server (Vite):
+  ```bash
+  cd ui && npm run dev
+  ```
+- Build static assets (served by the Python chat UI server from `ui/dist/` when present):
+  ```bash
+  cd ui && npm run build
+  ```
+- Serve the built frontend locally (Vite preview):
+  ```bash
+  cd ui && npm run preview
+  ```
+
 ## Commit & Pull Request Guidelines
 - Follow the Helix task template: Context, Change Summary, Artifacts, Verification, Doc Deltas, Risks & Rollback. Reference the exact doc section IDs or headings that govern the change.
 - Commit messages are imperative and scoped (e.g., `feat(tokimon): add retry gate`, `docs(repo): clarify test commands`). Include AI tool attribution in the body when applicable.

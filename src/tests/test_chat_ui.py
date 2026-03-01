@@ -15,6 +15,13 @@ def _get_json(url: str, *, timeout_s: float = 2.0) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _get_html(url: str, *, timeout_s: float = 2.0) -> tuple[str, str]:
+    with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        content_type = response.headers.get("content-type") or ""
+        body = response.read().decode("utf-8", errors="replace")
+    return content_type, body
+
+
 def _post_json(url: str, payload: dict, *, timeout_s: float = 10.0) -> dict:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -54,6 +61,9 @@ def test_chat_ui_healthz_and_send(tmp_path: Path) -> None:
     server.start()
     try:
         _wait_for_healthz(server.url)
+        content_type, body = _get_html(f"{server.url}/")
+        assert "text/html" in content_type
+        assert "<!doctype html" in body.lower()
         payload = _post_json(
             f"{server.url}/api/send",
             {"message": "hello", "history": []},

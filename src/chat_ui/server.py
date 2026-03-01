@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,141 +28,32 @@ from tools.pytest_tool import PytestTool
 from tools.web_tool import WebTool
 
 
-_INDEX_HTML = """<!doctype html>
+_BUILD_MISSING_HTML = """<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Tokimon Chat</title>
+    <title>Tokimon Chat (UI build missing)</title>
     <style>
       :root { color-scheme: light dark; }
       body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-      header { padding: 12px 16px; border-bottom: 1px solid #4443; font-weight: 600; }
-      #wrap { display: grid; grid-template-rows: 1fr auto; height: calc(100vh - 49px); }
-      #log { padding: 16px; overflow: auto; }
-      .msg { margin: 0 0 12px 0; white-space: pre-wrap; }
-      .user { font-weight: 600; }
-      .assistant { opacity: 0.95; }
-      form { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 12px 16px; border-top: 1px solid #4443; }
-      textarea { width: 100%; resize: vertical; min-height: 44px; padding: 10px; font: inherit; }
-      button { padding: 10px 14px; font: inherit; }
-      .meta { opacity: 0.7; font-size: 12px; margin-top: 4px; }
-      .error { color: #b00020; }
-      details.structured { margin-top: 8px; }
-      details.structured > summary { cursor: pointer; opacity: 0.85; }
-      pre { margin: 8px 0 0 0; padding: 10px; border: 1px solid #4443; border-radius: 6px; overflow: auto; }
-      .ui-block { margin-top: 8px; padding: 10px; border: 1px solid #4443; border-radius: 6px; }
-      .ui-block-title { font-size: 12px; opacity: 0.75; margin-bottom: 6px; }
-      .ui-block pre { margin-top: 6px; }
+      main { max-width: 860px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
+      pre { padding: 12px; border: 1px solid #4443; border-radius: 8px; overflow: auto; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     </style>
   </head>
   <body>
-    <header>Tokimon Chat UI</header>
-    <div id="wrap">
-      <div id="log"></div>
-      <form id="form">
-        <textarea id="input" placeholder="Type a message…"></textarea>
-        <button id="send" type="submit">Send</button>
-      </form>
-    </div>
-    <script>
-      const log = document.getElementById('log');
-      const form = document.getElementById('form');
-      const input = document.getElementById('input');
-      const sendBtn = document.getElementById('send');
-      const history = [];
-
-      function append(role, content, meta) {
-        const p = document.createElement('div');
-        p.className = 'msg ' + role;
-        const label = role === 'user' ? 'You' : 'Tokimon';
-        const line = document.createElement('div');
-        line.textContent = label + ': ' + content;
-        p.appendChild(line);
-        if (meta) {
-          const m = document.createElement('div');
-          m.className = 'meta';
-          m.textContent = meta;
-          p.appendChild(m);
-        }
-        log.appendChild(p);
-        log.scrollTop = log.scrollHeight;
-        return p;
-      }
-
-      function renderStructured(container, data) {
-        if (!container || !data) return;
-        const result = data.step_result || data;
-        const details = document.createElement('details');
-        details.className = 'structured';
-        const s = document.createElement('summary');
-        s.textContent = 'Structured result';
-        details.appendChild(s);
-        const pre = document.createElement('pre');
-        pre.textContent = JSON.stringify(result, null, 2);
-        details.appendChild(pre);
-        container.appendChild(details);
-
-        const blocks = (result && Array.isArray(result.ui_blocks)) ? result.ui_blocks : [];
-        if (!blocks.length) return;
-        for (let i = 0; i < blocks.length; i++) {
-          const block = blocks[i];
-          const blockEl = document.createElement('div');
-          blockEl.className = 'ui-block';
-          const titleEl = document.createElement('div');
-          titleEl.className = 'ui-block-title';
-          const title = (block && block.title) ? String(block.title) : '';
-          const type = (block && block.type) ? String(block.type) : 'unknown';
-          titleEl.textContent = title || ('UI Block ' + (i + 1) + ' (' + type + ')');
-          blockEl.appendChild(titleEl);
-
-          const contentEl = document.createElement('pre');
-          if (type === 'text') {
-            contentEl.textContent = (block && block.text) ? String(block.text) : '';
-          } else if (type === 'json') {
-            contentEl.textContent = JSON.stringify(block ? block.data : null, null, 2);
-          } else {
-            contentEl.textContent = JSON.stringify(block, null, 2);
-          }
-          blockEl.appendChild(contentEl);
-          container.appendChild(blockEl);
-        }
-      }
-
-      async function sendMessage(message) {
-        append('user', message);
-        history.push({role: 'user', content: message});
-        sendBtn.disabled = true;
-        try {
-          const res = await fetch('/api/send', {
-            method: 'POST',
-            headers: {'content-type': 'application/json'},
-            body: JSON.stringify({message, history})
-          });
-          const data = await res.json();
-          const reply = data.reply || data.summary || '';
-          const meta = data.status ? ('status=' + data.status) : '';
-          const node = append('assistant', reply || '(no reply)', meta);
-          renderStructured(node, data);
-          history.push({role: 'assistant', content: reply || ''});
-        } catch (err) {
-          const msg = (err && err.message) ? err.message : String(err);
-          append('assistant', 'Error: ' + msg, 'request failed');
-          const last = log.lastChild;
-          if (last) last.classList.add('error');
-        } finally {
-          sendBtn.disabled = false;
-        }
-      }
-
-      form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const message = (input.value || '').trim();
-        if (!message) return;
-        input.value = '';
-        sendMessage(message);
-      });
-    </script>
+    <main>
+      <h1>Tokimon Chat UI</h1>
+      <p>The React frontend build was not found. Build it from the repo root:</p>
+      <pre><code>cd ui
+npm install
+npm run build</code></pre>
+      <p>Then restart <code>tokimon chat-ui</code> and reload this page.</p>
+      <p>For local development, you can also run the Vite dev server:</p>
+      <pre><code>cd ui
+npm run dev</code></pre>
+    </main>
   </body>
 </html>
 """
@@ -307,13 +199,59 @@ class _ChatUIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path == "/":
-            self._send_html(_INDEX_HTML)
-            return
         if parsed.path == "/healthz":
             self._send_json({"ok": True})
             return
+        if self._try_serve_frontend(parsed.path):
+            return
+        if parsed.path == "/":
+            self._send_html(_BUILD_MISSING_HTML)
+            return
         self._send_json({"ok": False, "error": "not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _frontend_dist_dir(self) -> Path:
+        return self.server.workspace_dir / "ui" / "dist"
+
+    def _try_serve_frontend(self, request_path: str) -> bool:
+        dist_dir = self._frontend_dist_dir()
+        index_path = dist_dir / "index.html"
+        if not index_path.exists():
+            return False
+
+        if request_path in {"", "/"}:
+            self._send_file(index_path)
+            return True
+
+        rel = request_path.lstrip("/")
+        base = dist_dir.resolve()
+        candidate = (base / rel).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            return False
+
+        if candidate.exists() and candidate.is_file():
+            self._send_file(candidate)
+            return True
+
+        if "." not in Path(rel).name:
+            self._send_file(index_path)
+            return True
+
+        return False
+
+    def _send_file(self, path: Path) -> None:
+        data = path.read_bytes()
+        content_type, _ = mimetypes.guess_type(str(path))
+        if not content_type:
+            content_type = "application/octet-stream"
+        if content_type.startswith("text/") or content_type in {"application/javascript", "application/json", "image/svg+xml"}:
+            content_type = f"{content_type}; charset=utf-8"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)

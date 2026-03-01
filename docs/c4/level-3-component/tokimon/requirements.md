@@ -36,11 +36,21 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - `next_actions`: array of string
   - `failure_signature`: string (empty when none)
   - `ui_blocks` (optional): array of UIBlock objects (see below)
-- UIBlock schema (minimal, deterministic):
-  - `type`: `"text" | "json"`
-  - `title` (optional): string
+- UIBlock schema (deterministic):
+  - Base fields:
+    - `type`: `"text" | "json" | "component"`
+    - `title` (optional): string
   - When `type="text"`: `text` (string) is required.
   - When `type="json"`: `data` (any JSON-serializable value) is required.
+  - When `type="component"`:
+    - `component`: `"Text" | "Json" | "Panel" | "Chart" | "Form"`
+    - `props`: object (JSON-serializable; validated by the frontend via Zod)
+    - Component prop schemas:
+      - `Text`: `{text: string}`
+      - `Json`: `{data: any}`
+      - `Panel`: `{title?: string, blocks: UIBlock[]}`
+      - `Chart`: `{kind: "bar" | "line", title?: string, labels: string[], values: number[]}`
+      - `Form`: `{title?: string, submit_label?: string, fields: [{name: string, label?: string, type: "string" | "number" | "boolean" | "json", required?: boolean, placeholder?: string}]}`
 - Worker final outputs MUST validate against a per-step success schema (type checks + required keys, not just JSON parsing).
 - On schema validation failure, the worker MUST attempt bounded repair by asking the model to re-emit a schema-valid final object (max 2 repair attempts). If repair fails, the step MUST return a deterministic schema-related `failure_signature` (prefix `worker-output-schema-invalid`).
 - Manager tracks delegation graph, avoids cycles, and enforces progress-based continuation.
@@ -308,9 +318,11 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 
 ### Chat UI
 - `tokimon chat-ui` starts a local web server (binds loopback by default) that serves a single-page chat UI.
+- The chat UI frontend is a React + TypeScript app built with Vite under `ui/`.
+- `GET /` serves `ui/dist/index.html` and static assets when present; otherwise it serves an HTML page explaining that the UI build is missing.
 - Health endpoint: `GET /healthz` returns JSON indicating the server is running.
 - Chat endpoint: `POST /api/send` accepts JSON `{message: string, history?: [{role, content}]}` and returns a structured JSON reply including the step result fields (`status`, `summary`, `artifacts`, `metrics`, `next_actions`, `failure_signature`) plus optional `ui_blocks`, and a human-readable assistant message (in `reply`).
-- Chat UI renders the structured result and any returned `ui_blocks` (at minimum: pretty-printed JSON plus simple block rendering).
+- The frontend renders `ui_blocks` using `@tambo-ai/react` (`TamboRegistryProvider` + `ComponentRenderer`) with a local registry (no Tambo cloud / no API key).
 - Chat UI persists each `/api/send` result under `<workspace_dir>/runs/chat-ui/run-<run_id>/artifacts/steps/chat-<N>/step_result.json`.
 - The chat handler uses the same tool set as the hierarchical runner (file, grep, patch, pytest, web).
 - Default LLM provider is `mock`; `--llm codex` / `--llm claude` (or `TOKIMON_LLM=codex|claude`) enables the corresponding CLI-backed client.

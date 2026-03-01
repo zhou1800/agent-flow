@@ -63,6 +63,7 @@ This document maps requirements to automated tests.
 
 - Chat UI smoke test (mock model):
   - Start `tokimon chat-ui` (or the server module) on an ephemeral port.
+  - Assert `GET /` returns HTML (serves the built React UI when present, otherwise a deterministic build-missing page; tests MUST NOT require `npm run build`).
   - Assert `GET /healthz` returns `{"ok": true}` (or equivalent).
   - Assert `POST /api/send` with a simple message returns a structured JSON reply (including any `ui_blocks`).
   - Assert a `step_result.json` run artifact exists under the configured `workspace_dir`.
