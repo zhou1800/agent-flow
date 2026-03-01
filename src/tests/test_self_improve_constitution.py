@@ -145,7 +145,7 @@ def test_report_markdown_includes_constitution_headings_and_energy() -> None:
     assert "## Experiment Loop Summary" in markdown
     assert "## Parallel Exploration Protocol" in markdown
     assert "## Audit Log" in markdown
-    planned_energy = 2 * 1 * 3 * 2
+    planned_energy = 2 * 1 * 3 * 50
     actual_energy = (2 + 3) + (1 + 4)
     assert f"Planned energy: {planned_energy}" in markdown
     assert f"Actual energy: {actual_energy}" in markdown

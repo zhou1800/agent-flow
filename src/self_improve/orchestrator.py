@@ -1187,7 +1187,10 @@ def _score(
 def _planned_energy_budget(sessions: int, max_attempts: int) -> int:
     total_sessions = max(0, int(sessions))
     attempts = max(1, int(max_attempts))
-    return total_sessions * attempts * 2
+    # A self-improve attempt typically needs multiple model calls plus several tool calls
+    # (docs reads, greps, patches, and at least one evaluation run). Use a conservative
+    # per-attempt budget so agents do not stop early before making verifiable changes.
+    return total_sessions * attempts * 50
 
 
 def _planned_energy_from_settings(settings: dict[str, Any]) -> int:
