@@ -32,6 +32,10 @@ This document maps requirements to automated tests.
 - Worker tool loop: tool calls execute and are reflected in worker metrics (model/tool call counts).
 - Worker output schema enforcement: final structured outputs validate against the per-step success schema; invalid outputs trigger bounded repair (max 2) and produce a deterministic schema-related `failure_signature` on exhaustion.
 - Artifact persistence: per-step `step_result.json` is persisted under run artifacts and includes the full structured step result (including any `ui_blocks`).
+- Observability metrics + dashboard artifacts:
+  - For each run, assert `<run_root>/reports/metrics.json` and `<run_root>/reports/dashboard.html` exist.
+  - Assert `metrics.json` is stable JSON (sorted keys; deterministic formatting) and uses the canonical metric key set.
+  - Assert `dashboard.html` is self-contained (no external JS/CSS/CDN) and deterministic from `metrics.json`.
 - Tool call correlation: tool calls with `call_id` are echoed into tool results and recorded in `tool_call_records`.
 - Trace loop unrolling: worker model/tool calls are recorded to `trace.jsonl` with bounded payload sizes.
 - Codex CLI prompt rendering: deterministic prompt envelope with stable tool ordering and explicit context sections.
@@ -62,6 +66,7 @@ This document maps requirements to automated tests.
   - Assert `GET /healthz` returns `{"ok": true}` (or equivalent).
   - Assert `POST /api/send` with a simple message returns a structured JSON reply (including any `ui_blocks`).
   - Assert a `step_result.json` run artifact exists under the configured `workspace_dir`.
+  - Assert run-level observability artifacts exist under the same run root: `reports/metrics.json` and `reports/dashboard.html`.
   - Shut the server down cleanly.
 
 - Gateway smoke test (mock model):

@@ -179,6 +179,44 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - `trace.jsonl` captures workflow state transitions plus unrolled worker loops (model calls + tool calls/results).
 - Trace events include stable identifiers when available (task_id, step_id, worker role, call_id, tool_call_id, call_signature) and use bounded payload sizes (truncate large fields).
 
+### Observability: Metrics & Dashboards
+- Tokimon MUST persist canonical run/step metrics and a self-contained dashboard artifact for every BaselineRunner, HierarchicalRunner, and Chat UI run.
+- Persistence locations (relative to `<run_root>`):
+  - Canonical metrics: `reports/metrics.json`
+  - Dashboard artifact: `reports/dashboard.html` (self-contained HTML; no external CDN)
+- `metrics.json` schema (stable JSON with sorted keys):
+  - `schema_version`: string (current: `"1.0"`)
+  - `run`: run-level summary metrics (object)
+  - `steps`: list of step result metric objects (one per step attempt when available)
+- Canonical step metrics (per element of `steps`) with types/units:
+  - `step_id`: string
+  - `attempt_id`: integer (1-based; 0 allowed when a step has no attempts)
+  - `status`: string (`"SUCCESS" | "FAILURE" | "BLOCKED" | "PARTIAL"` when available)
+  - `elapsed_ms`: number (milliseconds; may be null when unavailable)
+  - `model_calls`: integer (count; may be null when unavailable)
+  - `tool_calls`: integer (count; may be null when unavailable)
+  - `energy`: integer (count; `model_calls + tool_calls` when both available)
+  - `iteration_count`: integer (count; may be null when unavailable)
+  - `schema_repairs`: integer (count; may be null when unavailable)
+  - `artifact_count`: integer (count; may be null when unavailable)
+  - `touched_files_count`: integer (count; may be null when unavailable)
+  - `tool_errors`: integer (count of non-ok tool calls; may be null when unavailable)
+  - `failure_signature`: string
+- Canonical run summary metrics (under `run`) with types/units:
+  - `run_id`: string
+  - `runner`: string (`"baseline" | "hierarchical" | "chat-ui"`)
+  - `wall_time_s`: number (seconds; may be null when unavailable)
+  - `model_calls`: integer (count; sum of step metrics when available)
+  - `tool_calls`: integer (count; sum of step metrics when available)
+  - `energy`: integer (count; `model_calls + tool_calls` when available)
+  - `steps_total`: integer (count)
+  - `steps_by_status`: object mapping `status -> count` (counts)
+  - `tests_passed`: integer (count; best observed when tests are run; null otherwise)
+  - `tests_failed`: integer (count; best observed when tests are run; null otherwise)
+- Determinism requirements:
+  - Metric normalization MUST be deterministic (stable key names, stable coercion rules, stable ordering).
+  - `dashboard.html` MUST be generated deterministically from the persisted `metrics.json` and MUST NOT require network access (no external JS/CSS/CDN).
+
 ### Model Integration
 - Abstract `LLMClient.send(messages, tools=None, response_schema=None)`.
 - Provide stub adapter, deterministic mock adapter, and a documented placeholder for a real adapter.

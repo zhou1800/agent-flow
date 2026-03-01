@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -15,6 +16,9 @@ from urllib.parse import urlparse
 from artifacts import ArtifactStore
 from agents.worker import Worker
 from llm.client import build_llm_client
+from observability.reports import build_run_metrics_payload
+from observability.reports import normalize_step_metrics
+from observability.reports import write_metrics_and_dashboard
 from runs import create_run_context
 from tools.file_tool import FileTool
 from tools.grep_tool import GrepTool
@@ -192,6 +196,8 @@ class _ChatHTTPServer(ThreadingHTTPServer):
         self.artifact_store = ArtifactStore(self.run_context.artifacts_dir)
         self._step_lock = threading.Lock()
         self._step_index = 0
+        self._run_start = time.perf_counter()
+        self._step_metrics: dict[str, dict[str, Any]] = {}
 
     def handle_send(self, message: str, history: list[dict[str, Any]] | None) -> dict[str, Any]:
         history = history or []
@@ -221,6 +227,27 @@ class _ChatHTTPServer(ThreadingHTTPServer):
             outputs={"summary": output.summary},
             step_result=step_result,
         )
+        step_metrics = normalize_step_metrics(
+            step_id=step_id,
+            attempt_id=1,
+            status=output.status.value,
+            artifacts=output.artifacts,
+            raw_metrics=output.metrics,
+            failure_signature=output.failure_signature,
+        )
+        with self._step_lock:
+            self._step_metrics[step_id] = step_metrics
+            wall_time_s = time.perf_counter() - self._run_start
+            steps = [self._step_metrics[key] for key in sorted(self._step_metrics)]
+            run_metrics_payload = build_run_metrics_payload(
+                run_id=self.run_context.run_id,
+                runner="chat-ui",
+                wall_time_s=wall_time_s,
+                steps=steps,
+                tests_passed=None,
+                tests_failed=None,
+            )
+            write_metrics_and_dashboard(self.run_context.reports_dir, run_metrics_payload)
         return {
             "status": output.status.value,
             "reply": output.summary,

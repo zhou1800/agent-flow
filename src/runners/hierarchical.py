@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,9 @@ from execution.parallel import AsyncExecutor, ConcurrencyConfig
 from flow_types import ProgressMetrics, StepStatus, WorkerStatus
 from logging_utils import log_to_file
 from memory.store import MemoryStore
+from observability.reports import build_run_metrics_payload
+from observability.reports import normalize_step_metrics
+from observability.reports import write_metrics_and_dashboard
 from skills.gap_detector import SkillGapDetector
 from runs import RunContext, create_run_context, load_run_context
 from tools.file_tool import FileTool
@@ -47,6 +51,7 @@ class HierarchicalRunner:
     def run(self, goal: str, task_steps: list[dict[str, Any]] | None = None,
             task_id: str | None = None, test_args: list[str] | None = None,
             concurrency: int = 4) -> HierarchicalResult:
+        run_start = time.perf_counter()
         run_context = create_run_context(self.base_dir)
         run_context.write_manifest({"goal": goal, "task_id": task_id, "runner": "hierarchical"})
         memory_store = MemoryStore(self.repo_root / "memory")
@@ -95,6 +100,17 @@ class HierarchicalRunner:
         asyncio.run(run_loop())
         log_to_file(manager_log, "Run complete")
         model_calls, tool_calls, best_passed, best_failed = _summarize_workflow(engine)
+        wall_time_s = time.perf_counter() - run_start
+        steps = _collect_step_metrics(engine)
+        run_metrics_payload = build_run_metrics_payload(
+            run_id=run_context.run_id,
+            runner="hierarchical",
+            wall_time_s=wall_time_s,
+            steps=steps,
+            tests_passed=best_passed,
+            tests_failed=best_failed,
+        )
+        write_metrics_and_dashboard(run_context.reports_dir, run_metrics_payload)
         return HierarchicalResult(
             run_context=run_context,
             workflow_state_path=run_context.workflow_state_path,
@@ -106,6 +122,7 @@ class HierarchicalRunner:
 
     def resume(self, run_path: Path, test_args: list[str] | None = None,
                concurrency: int = 4) -> HierarchicalResult:
+        run_start = time.perf_counter()
         run_context = load_run_context(run_path)
         engine = WorkflowEngine.load(run_context.workflow_state_path)
         memory_store = MemoryStore(self.repo_root / "memory")
@@ -141,6 +158,17 @@ class HierarchicalRunner:
         asyncio.run(run_loop())
         log_to_file(manager_log, "Resume complete")
         model_calls, tool_calls, best_passed, best_failed = _summarize_workflow(engine)
+        wall_time_s = time.perf_counter() - run_start
+        steps = _collect_step_metrics(engine)
+        run_metrics_payload = build_run_metrics_payload(
+            run_id=run_context.run_id,
+            runner="hierarchical",
+            wall_time_s=wall_time_s,
+            steps=steps,
+            tests_passed=best_passed,
+            tests_failed=best_failed,
+        )
+        write_metrics_and_dashboard(run_context.reports_dir, run_metrics_payload)
         return HierarchicalResult(
             run_context=run_context,
             workflow_state_path=run_context.workflow_state_path,
@@ -285,6 +313,11 @@ class HierarchicalRunner:
         touched_files = output.metrics.get("touched_files") if isinstance(output.metrics, dict) else None
         if isinstance(touched_files, list) and touched_files:
             touched_hash = _hash_touched_files(self.repo_root, [str(p) for p in touched_files])
+        touched_files_count = len(touched_files) if isinstance(touched_files, list) else None
+        tool_errors = None
+        tool_call_records = output.metrics.get("tool_call_records") if isinstance(output.metrics, dict) else None
+        if isinstance(tool_call_records, list):
+            tool_errors = sum(1 for record in tool_call_records if isinstance(record, dict) and record.get("ok") is False)
         progress = ProgressMetrics(
             failing_tests=pytest_metrics.get("failed") if pytest_metrics else None,
             passed_tests=pytest_metrics.get("passed") if pytest_metrics else None,
@@ -306,9 +339,15 @@ class HierarchicalRunner:
                 "passed_tests": progress.passed_tests,
                 "new_artifacts": progress.new_artifacts,
                 "artifact_delta_hash": progress.artifact_delta_hash,
+                "worker_status": output.status.value,
                 "model_calls": output.metrics.get("model_calls"),
                 "tool_calls": output.metrics.get("tool_calls"),
+                "elapsed_ms": output.metrics.get("elapsed_ms"),
                 "iteration_count": output.metrics.get("iteration_count"),
+                "schema_repairs": output.metrics.get("schema_repairs"),
+                "artifact_count": len(output.artifacts),
+                "touched_files_count": touched_files_count,
+                "tool_errors": tool_errors,
             },
             artifacts=output.artifacts,
         )
@@ -475,3 +514,46 @@ def _summarize_workflow(engine: WorkflowEngine) -> tuple[int, int, int | None, i
             if isinstance(failed, int):
                 best_failed = failed if best_failed is None else min(best_failed, failed)
     return model_calls, tool_calls, best_passed, best_failed
+
+
+def _collect_step_metrics(engine: WorkflowEngine) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for step_id, step_state in engine.state.steps.items():
+        if step_state.attempts:
+            for attempt in step_state.attempts:
+                raw_metrics = attempt.progress_metrics if isinstance(attempt.progress_metrics, dict) else {}
+                status = raw_metrics.get("worker_status") if isinstance(raw_metrics.get("worker_status"), str) else _worker_status_from_step_status(attempt.status)
+                steps.append(
+                    normalize_step_metrics(
+                        step_id=step_id,
+                        attempt_id=int(getattr(attempt, "attempt_id", 0) or 0),
+                        status=status,
+                        artifacts=list(getattr(attempt, "artifacts", []) or []),
+                        raw_metrics=dict(raw_metrics),
+                        failure_signature=getattr(attempt, "failure_signature", "") or "",
+                    )
+                )
+        else:
+            steps.append(
+                normalize_step_metrics(
+                    step_id=step_id,
+                    attempt_id=0,
+                    status=str(step_state.status.value),
+                    artifacts=[],
+                    raw_metrics={},
+                    failure_signature="",
+                )
+            )
+    return steps
+
+
+def _worker_status_from_step_status(status: StepStatus) -> str:
+    if status == StepStatus.SUCCEEDED:
+        return WorkerStatus.SUCCESS.value
+    if status == StepStatus.FAILED:
+        return WorkerStatus.FAILURE.value
+    if status == StepStatus.BLOCKED:
+        return WorkerStatus.BLOCKED.value
+    if status == StepStatus.PARTIAL:
+        return WorkerStatus.PARTIAL.value
+    return status.value

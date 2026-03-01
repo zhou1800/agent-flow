@@ -77,5 +77,10 @@ def test_chat_ui_healthz_and_send(tmp_path: Path) -> None:
         assert step_result["status"] == payload["status"]
         assert step_result["summary"] == payload["summary"]
         assert "ui_blocks" in step_result
+
+        metrics_path = run_root / "reports" / "metrics.json"
+        dashboard_path = run_root / "reports" / "dashboard.html"
+        assert metrics_path.exists()
+        assert dashboard_path.exists()
     finally:
         server.stop()

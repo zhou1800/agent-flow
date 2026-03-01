@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,9 @@ from artifacts import ArtifactStore
 from flow_types import ProgressMetrics, WorkerStatus
 from logging_utils import log_to_file
 from memory.store import MemoryStore
+from observability.reports import build_run_metrics_payload
+from observability.reports import normalize_step_metrics
+from observability.reports import write_metrics_and_dashboard
 from runs import RunContext, create_run_context
 from tools.file_tool import FileTool
 from tools.grep_tool import GrepTool
@@ -39,6 +43,7 @@ class BaselineRunner:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self, goal: str, task_id: str | None = None, test_args: list[str] | None = None) -> BaselineResult:
+        run_start = time.perf_counter()
         run_context = create_run_context(self.base_dir)
         run_context.write_manifest({"goal": goal, "task_id": task_id, "runner": "baseline"})
         trace = TraceLogger(run_context.trace_path)
@@ -92,6 +97,24 @@ class BaselineRunner:
         )
         model_calls = int(output.metrics.get("model_calls") or 0)
         tool_calls = int(output.metrics.get("tool_calls") or 0)
+        wall_time_s = time.perf_counter() - run_start
+        step_metrics = normalize_step_metrics(
+            step_id="single-step",
+            attempt_id=1,
+            status=output.status.value,
+            artifacts=output.artifacts,
+            raw_metrics=output.metrics,
+            failure_signature=output.failure_signature,
+        )
+        run_metrics_payload = build_run_metrics_payload(
+            run_id=run_context.run_id,
+            runner="baseline",
+            wall_time_s=wall_time_s,
+            steps=[step_metrics],
+            tests_passed=pytest_metrics.get("passed") if pytest_metrics else None,
+            tests_failed=pytest_metrics.get("failed") if pytest_metrics else None,
+        )
+        write_metrics_and_dashboard(run_context.reports_dir, run_metrics_payload)
         trace.log("baseline_complete", {"status": output.status, "summary": output.summary})
         log_to_file(run_context.logs_dir / "baseline.log", "Run complete")
         return BaselineResult(
