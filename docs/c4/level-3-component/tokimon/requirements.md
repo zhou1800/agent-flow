@@ -164,6 +164,16 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - Workers may request tool calls by returning `tool_calls` in the model response:
   - `{"tool_calls": [{"tool": "grep", "action": "search", "args": {"pattern": "...", "path": "..."}, "call_id": "call_1"}]}`
   - `call_id` is optional but, when present, MUST be echoed back in the tool result payloads so models can correlate results.
+- Tool calls MUST be policy-audited:
+  - Every tool call record MUST include a `policy_decision` object with at least:
+    - `decision`: `"allow" | "deny" | "confirm"`
+    - `risk_tier`: `"low" | "medium" | "high"`
+    - `reason`: string (bounded)
+    - `policy_id`: string (stable identifier, e.g., `"default-v1"`)
+  - Phase 1 default policy may be allow-all, but policy decisions MUST still be recorded deterministically.
+- Side-effect tool idempotency (Phase 1):
+  - For side-effectful actions (`file.write`, `patch.apply`), repeated calls within a single worker step attempt with the same `(tool, action, args)` MUST be deduped and MUST NOT execute twice.
+  - Deduped tool call records MUST be marked with `cached=true` and MUST return the same tool result payload as the first execution.
 - A response is considered **final** when it includes `status` (SUCCESS|FAILURE|BLOCKED|PARTIAL).
 - Tool results are fed back into the worker loop as structured records; workers report:
   - `metrics.model_calls`, `metrics.tool_calls`, `metrics.elapsed_ms`, and `metrics.iteration_count`
@@ -188,6 +198,30 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 ### Trace & Loop Unrolling
 - `trace.jsonl` captures workflow state transitions plus unrolled worker loops (model calls + tool calls/results).
 - Trace events include stable identifiers when available (task_id, step_id, worker role, call_id, tool_call_id, call_signature) and use bounded payload sizes (truncate large fields).
+
+### Replay & Audit (OpenClaw-inspired, Phase 1)
+- Tokimon MUST persist a per-step replay artifact that enables deterministic, offline replay with all tools mocked (no side effects).
+- Replay artifact location (relative to `<run_root>`): `artifacts/steps/<step_id>/replay.json`
+- Replay artifact schema (stable JSON with sorted keys):
+  - `schema_version`: string (current: `"1.0"`)
+  - `recorded_at`: string (ISO-8601 UTC)
+  - `step_id`: string
+  - `worker_role`: string
+  - `goal`: string (may be truncated)
+  - `inputs`: object (JSON-serializable; may be truncated)
+  - `memory`: list of strings (may be truncated)
+  - `model_script`: list of model responses (JSON objects) in call order (may be truncated, but MUST preserve `tool_calls` and final `status` payloads).
+  - `tool_script`: list of invoked tool calls in call order:
+    - `tool`, `action`, optional `call_id`
+    - `args_hash`: sha256 of stable JSON of args
+    - `args_preview`: truncated args object (for debugging only)
+    - `result`: ToolResult-like object (`ok`, `summary`, `data`, `error`, `elapsed_ms`) with bounded payload sizes
+  - `final_result`: object containing the final worker output fields (`status`, `summary`, `failure_signature`) plus a bounded subset of `metrics`.
+- Redaction requirements (minimum): replay artifacts MUST redact bearer tokens of the form `Authorization: Bearer <token>` anywhere in recorded strings.
+- Offline replay CLI:
+  - `tokimon replay --run-path <run_root>` MUST replay every step replay artifact using the recorded `model_script` and `tool_script`, with tools mocked so no filesystem or network side effects occur.
+  - Replay MUST validate that invoked tool calls match recorded `tool_script` entries by comparing `args_hash`.
+  - Replay MUST exit `0` when all steps replay and the computed final outputs match `final_result`; otherwise exit non-zero and report the first mismatch deterministically.
 
 ### Observability: Metrics & Dashboards
 - Tokimon MUST persist canonical run/step metrics and a self-contained dashboard artifact for every BaselineRunner, HierarchicalRunner, and Chat UI run.

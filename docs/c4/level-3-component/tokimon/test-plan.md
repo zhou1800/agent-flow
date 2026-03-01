@@ -38,6 +38,12 @@ This document maps requirements to automated tests.
   - Assert `dashboard.html` is self-contained (no external JS/CSS/CDN) and deterministic from `metrics.json`.
 - Tool call correlation: tool calls with `call_id` are echoed into tool results and recorded in `tool_call_records`.
 - Trace loop unrolling: worker model/tool calls are recorded to `trace.jsonl` with bounded payload sizes.
+- Replay & audit:
+  - Step replay artifacts: each step writes `artifacts/steps/<step_id>/replay.json` with the Phase 1 schema (model_script + tool_script + final_result).
+  - Replay CLI: `tokimon replay --run-path <run_root>` replays all steps offline with mocked tools and exits 0 on match.
+  - Redaction: replay artifacts redact bearer tokens (`Authorization: Bearer <token>`) in all recorded strings.
+- Tool policy decisions: every `tool_call_records[]` entry includes a `policy_decision` object with (`decision`, `risk_tier`, `reason`, `policy_id`).
+- Tool idempotency: repeated side-effect tool calls (`file.write`, `patch.apply`) within a single worker step attempt are deduped and do not execute twice (records include `cached=true`).
 - Codex CLI prompt rendering: deterministic prompt envelope with stable tool ordering and explicit context sections.
 - Codex CLI ripgrep guard: guard on/off, guard config contents, `RIPGREP_CONFIG_PATH` override/preservation, max-columns default and disable=0.
 - Codex CLI delegation markers: subprocess env includes `TOKIMON_DELEGATED=1`, increments `TOKIMON_DELEGATION_DEPTH`, and prompt context reflects delegation depth.
