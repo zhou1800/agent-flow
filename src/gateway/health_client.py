@@ -213,14 +213,31 @@ def _ws_connect(host: str, port: int, path: str, *, deadline: float) -> _WSClien
         header_bytes, rest = data.split(b"\r\n\r\n", 1)
         header_text = header_bytes.decode("utf-8", errors="replace")
         lines = header_text.split("\r\n")
-        if not lines or "101" not in lines[0]:
-            raise GatewayHealthError("handshake failed: expected 101 response")
         headers: dict[str, str] = {}
+        status_line = (lines[0] if lines else "").strip()
         for line in lines[1:]:
             if ":" not in line:
                 continue
             name, value = line.split(":", 1)
             headers[name.strip().lower()] = value.strip()
+        status_code: int | None = None
+        if status_line.startswith("HTTP/"):
+            parts = status_line.split()
+            if len(parts) >= 2:
+                try:
+                    status_code = int(parts[1])
+                except ValueError:
+                    status_code = None
+        if status_code != 101 and (not status_line or "101" not in status_line):
+            content_type = headers.get("content-type") or ""
+            details = f"got {status_line}" if status_line else "got empty response"
+            if content_type:
+                details = f"{details} ({content_type})"
+            raise GatewayHealthError(
+                "handshake failed: expected WebSocket upgrade (HTTP 101) "
+                f"for {host}:{port}{path}; {details}. "
+                "Is `tokimon gateway` running on that host/port?"
+            )
         accept = headers.get("sec-websocket-accept")
         expected = base64.b64encode(hashlib.sha1((key + _WS_GUID).encode("utf-8")).digest()).decode("ascii")
         if accept != expected:
