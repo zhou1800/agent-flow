@@ -252,6 +252,20 @@ class HierarchicalRunner:
         if isinstance(details, str) and details.strip():
             log_to_file(worker_log, f"Details: {details.strip()}")
 
+        raw_ui_blocks = output.data.get("ui_blocks") if isinstance(output.data, dict) else None
+        ui_blocks: list[dict[str, Any]] = []
+        if isinstance(raw_ui_blocks, list):
+            ui_blocks = [block for block in raw_ui_blocks if isinstance(block, dict)]
+        step_result: dict[str, Any] = {
+            "status": output.status.value,
+            "summary": output.summary,
+            "artifacts": output.artifacts,
+            "metrics": output.metrics,
+            "next_actions": output.next_actions,
+            "failure_signature": str(output.failure_signature or ""),
+            "ui_blocks": ui_blocks,
+        }
+
         outputs_payload: dict[str, Any] = {"summary": output.summary, "artifact_count": len(output.artifacts)}
         if output.failure_signature:
             outputs_payload["failure_signature"] = output.failure_signature
@@ -260,7 +274,13 @@ class HierarchicalRunner:
         engine.mark_outputs(step_id, outputs_payload)
 
         pytest_metrics = await self._run_tests(test_args, tools.get("pytest")) if test_args else None
-        artifact_hash = artifact_store.write_step(task_id, step_id, output.artifacts, outputs=step_state.outputs)
+        artifact_hash = artifact_store.write_step(
+            task_id,
+            step_id,
+            output.artifacts,
+            outputs=step_state.outputs,
+            step_result=step_result,
+        )
         touched_hash = None
         touched_files = output.metrics.get("touched_files") if isinstance(output.metrics, dict) else None
         if isinstance(touched_files, list) and touched_files:

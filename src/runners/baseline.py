@@ -64,7 +64,26 @@ class BaselineRunner:
         pytest_metrics = None
         if test_args:
             pytest_metrics = tools["pytest"].run(test_args).data
-        artifact_store.write_step(task_id or "baseline", "single-step", output.artifacts, outputs={"summary": output.summary})
+        raw_ui_blocks = output.data.get("ui_blocks") if isinstance(output.data, dict) else None
+        ui_blocks: list[dict[str, Any]] = []
+        if isinstance(raw_ui_blocks, list):
+            ui_blocks = [block for block in raw_ui_blocks if isinstance(block, dict)]
+        step_result: dict[str, Any] = {
+            "status": output.status.value,
+            "summary": output.summary,
+            "artifacts": output.artifacts,
+            "metrics": output.metrics,
+            "next_actions": output.next_actions,
+            "failure_signature": str(output.failure_signature or ""),
+            "ui_blocks": ui_blocks,
+        }
+        artifact_store.write_step(
+            task_id or "baseline",
+            "single-step",
+            output.artifacts,
+            outputs={"summary": output.summary},
+            step_result=step_result,
+        )
         progress = ProgressMetrics(
             failing_tests=pytest_metrics.get("failed") if pytest_metrics else None,
             passed_tests=pytest_metrics.get("passed") if pytest_metrics else None,

@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from artifacts import ArtifactStore
 from agents.worker import Worker
 from llm.client import build_llm_client
+from runs import create_run_context
 from tools.file_tool import FileTool
 from tools.grep_tool import GrepTool
 from tools.patch_tool import PatchTool
@@ -41,6 +43,12 @@ _INDEX_HTML = """<!doctype html>
       button { padding: 10px 14px; font: inherit; }
       .meta { opacity: 0.7; font-size: 12px; margin-top: 4px; }
       .error { color: #b00020; }
+      details.structured { margin-top: 8px; }
+      details.structured > summary { cursor: pointer; opacity: 0.85; }
+      pre { margin: 8px 0 0 0; padding: 10px; border: 1px solid #4443; border-radius: 6px; overflow: auto; }
+      .ui-block { margin-top: 8px; padding: 10px; border: 1px solid #4443; border-radius: 6px; }
+      .ui-block-title { font-size: 12px; opacity: 0.75; margin-bottom: 6px; }
+      .ui-block pre { margin-top: 6px; }
     </style>
   </head>
   <body>
@@ -63,7 +71,9 @@ _INDEX_HTML = """<!doctype html>
         const p = document.createElement('div');
         p.className = 'msg ' + role;
         const label = role === 'user' ? 'You' : 'Tokimon';
-        p.textContent = label + ': ' + content;
+        const line = document.createElement('div');
+        line.textContent = label + ': ' + content;
+        p.appendChild(line);
         if (meta) {
           const m = document.createElement('div');
           m.className = 'meta';
@@ -72,6 +82,46 @@ _INDEX_HTML = """<!doctype html>
         }
         log.appendChild(p);
         log.scrollTop = log.scrollHeight;
+        return p;
+      }
+
+      function renderStructured(container, data) {
+        if (!container || !data) return;
+        const result = data.step_result || data;
+        const details = document.createElement('details');
+        details.className = 'structured';
+        const s = document.createElement('summary');
+        s.textContent = 'Structured result';
+        details.appendChild(s);
+        const pre = document.createElement('pre');
+        pre.textContent = JSON.stringify(result, null, 2);
+        details.appendChild(pre);
+        container.appendChild(details);
+
+        const blocks = (result && Array.isArray(result.ui_blocks)) ? result.ui_blocks : [];
+        if (!blocks.length) return;
+        for (let i = 0; i < blocks.length; i++) {
+          const block = blocks[i];
+          const blockEl = document.createElement('div');
+          blockEl.className = 'ui-block';
+          const titleEl = document.createElement('div');
+          titleEl.className = 'ui-block-title';
+          const title = (block && block.title) ? String(block.title) : '';
+          const type = (block && block.type) ? String(block.type) : 'unknown';
+          titleEl.textContent = title || ('UI Block ' + (i + 1) + ' (' + type + ')');
+          blockEl.appendChild(titleEl);
+
+          const contentEl = document.createElement('pre');
+          if (type === 'text') {
+            contentEl.textContent = (block && block.text) ? String(block.text) : '';
+          } else if (type === 'json') {
+            contentEl.textContent = JSON.stringify(block ? block.data : null, null, 2);
+          } else {
+            contentEl.textContent = JSON.stringify(block, null, 2);
+          }
+          blockEl.appendChild(contentEl);
+          container.appendChild(blockEl);
+        }
       }
 
       async function sendMessage(message) {
@@ -87,7 +137,8 @@ _INDEX_HTML = """<!doctype html>
           const data = await res.json();
           const reply = data.reply || data.summary || '';
           const meta = data.status ? ('status=' + data.status) : '';
-          append('assistant', reply || '(no reply)', meta);
+          const node = append('assistant', reply || '(no reply)', meta);
+          renderStructured(node, data);
           history.push({role: 'assistant', content: reply || ''});
         } catch (err) {
           const msg = (err && err.message) ? err.message : String(err);
@@ -135,12 +186,41 @@ class _ChatHTTPServer(ThreadingHTTPServer):
             "pytest": PytestTool(self.workspace_dir),
             "web": WebTool(),
         }
+        runs_root = self.workspace_dir / "runs" / "chat-ui"
+        self.run_context = create_run_context(runs_root)
+        self.run_context.write_manifest({"runner": "chat-ui", "workspace_dir": str(self.workspace_dir)})
+        self.artifact_store = ArtifactStore(self.run_context.artifacts_dir)
+        self._step_lock = threading.Lock()
+        self._step_index = 0
 
     def handle_send(self, message: str, history: list[dict[str, Any]] | None) -> dict[str, Any]:
         history = history or []
         memory = _history_to_memory(history)
         worker = Worker("Chat", self.llm_client, self.tools)
-        output = worker.run(goal=message, step_id="chat", inputs={"message": message, "history": history}, memory=memory)
+        with self._step_lock:
+            self._step_index += 1
+            step_id = f"chat-{self._step_index:04d}"
+        output = worker.run(goal=message, step_id=step_id, inputs={"message": message, "history": history}, memory=memory)
+        raw_ui_blocks = output.data.get("ui_blocks") if isinstance(output.data, dict) else None
+        ui_blocks: list[dict[str, Any]] = []
+        if isinstance(raw_ui_blocks, list):
+            ui_blocks = [block for block in raw_ui_blocks if isinstance(block, dict)]
+        step_result: dict[str, Any] = {
+            "status": output.status.value,
+            "summary": output.summary,
+            "artifacts": output.artifacts,
+            "metrics": output.metrics,
+            "next_actions": output.next_actions,
+            "failure_signature": str(output.failure_signature or ""),
+            "ui_blocks": ui_blocks,
+        }
+        self.artifact_store.write_step(
+            task_id=self.run_context.run_id,
+            step_id=step_id,
+            artifacts=output.artifacts,
+            outputs={"summary": output.summary},
+            step_result=step_result,
+        )
         return {
             "status": output.status.value,
             "reply": output.summary,
@@ -149,6 +229,10 @@ class _ChatHTTPServer(ThreadingHTTPServer):
             "metrics": output.metrics,
             "next_actions": output.next_actions,
             "failure_signature": output.failure_signature,
+            "ui_blocks": ui_blocks,
+            "run_id": self.run_context.run_id,
+            "step_id": step_id,
+            "step_result": step_result,
         }
 
 

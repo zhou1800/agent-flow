@@ -61,5 +61,21 @@ def test_chat_ui_healthz_and_send(tmp_path: Path) -> None:
         assert payload["ok"] is True
         assert payload["reply"] == "mock response"
         assert payload["status"] in {"PARTIAL", "SUCCESS", "FAILURE", "BLOCKED"}
+        assert payload["summary"] == "mock response"
+        assert isinstance(payload["artifacts"], list)
+        assert isinstance(payload["metrics"], dict)
+        assert isinstance(payload["next_actions"], list)
+        assert isinstance(payload["failure_signature"], str)
+        assert isinstance(payload["ui_blocks"], list)
+        assert isinstance(payload["run_id"], str)
+        assert isinstance(payload["step_id"], str)
+
+        run_root = tmp_path / "runs" / "chat-ui" / f"run-{payload['run_id']}"
+        step_result_path = run_root / "artifacts" / "steps" / payload["step_id"] / "step_result.json"
+        assert step_result_path.exists()
+        step_result = json.loads(step_result_path.read_text())
+        assert step_result["status"] == payload["status"]
+        assert step_result["summary"] == payload["summary"]
+        assert "ui_blocks" in step_result
     finally:
         server.stop()

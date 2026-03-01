@@ -27,7 +27,20 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 ### Hierarchical Agents
 - Manager agent produces executable workflows with step contracts and dependencies.
 - Workers are specialized (Planner, Implementer, Debugger, Reviewer, TestTriager, SkillBuilder).
-- Worker outputs are structured and include status, summary, artifacts, metrics, next_actions, failure_signature.
+- Worker outputs are structured and include status, summary, artifacts, metrics, next_actions, failure_signature, and optional `ui_blocks`.
+- Step results (per step) are represented as a deterministic JSON object with this schema:
+  - `status`: `"SUCCESS" | "FAILURE" | "BLOCKED" | "PARTIAL"`
+  - `summary`: string (human-readable)
+  - `artifacts`: array of object (JSON-serializable)
+  - `metrics`: object (JSON-serializable)
+  - `next_actions`: array of string
+  - `failure_signature`: string (empty when none)
+  - `ui_blocks` (optional): array of UIBlock objects (see below)
+- UIBlock schema (minimal, deterministic):
+  - `type`: `"text" | "json"`
+  - `title` (optional): string
+  - When `type="text"`: `text` (string) is required.
+  - When `type="json"`: `data` (any JSON-serializable value) is required.
 - Worker final outputs MUST validate against a per-step success schema (type checks + required keys, not just JSON parsing).
 - On schema validation failure, the worker MUST attempt bounded repair by asking the model to re-emit a schema-valid final object (max 2 repair attempts). If repair fails, the step MUST return a deterministic schema-related `failure_signature` (prefix `worker-output-schema-invalid`).
 - Manager tracks delegation graph, avoids cycles, and enforces progress-based continuation.
@@ -74,6 +87,10 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - Parallel execution of independent steps.
 - Workflow engine supports early termination when a worker signals the overall goal is satisfied, marking remaining steps as skipped to avoid redundant work.
 - Artifact store for per-step outputs.
+  - Per step, Tokimon persists first-class artifacts under `<run_root>/artifacts/steps/<step_id>/`:
+    - `step_result.json`: full structured step result (including any `ui_blocks`).
+    - `outputs.json`: engine step outputs (may be a subset of the step result, used for workflow state).
+    - `artifacts.json`: the `artifacts` list (mirrors `step_result.json.artifacts` for convenience).
 - DSL: JSON or YAML for workflows; Python API for programmatic construction.
 
 ### Restart/Retry Controls
@@ -254,7 +271,9 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 ### Chat UI
 - `tokimon chat-ui` starts a local web server (binds loopback by default) that serves a single-page chat UI.
 - Health endpoint: `GET /healthz` returns JSON indicating the server is running.
-- Chat endpoint: `POST /api/send` accepts JSON `{message: string, history?: [{role, content}]}` and returns a structured JSON reply including `status` and a human-readable assistant message (in `reply` or `summary`).
+- Chat endpoint: `POST /api/send` accepts JSON `{message: string, history?: [{role, content}]}` and returns a structured JSON reply including the step result fields (`status`, `summary`, `artifacts`, `metrics`, `next_actions`, `failure_signature`) plus optional `ui_blocks`, and a human-readable assistant message (in `reply`).
+- Chat UI renders the structured result and any returned `ui_blocks` (at minimum: pretty-printed JSON plus simple block rendering).
+- Chat UI persists each `/api/send` result under `<workspace_dir>/runs/chat-ui/run-<run_id>/artifacts/steps/chat-<N>/step_result.json`.
 - The chat handler uses the same tool set as the hierarchical runner (file, grep, patch, pytest, web).
 - Default LLM provider is `mock`; `--llm codex` / `--llm claude` (or `TOKIMON_LLM=codex|claude`) enables the corresponding CLI-backed client.
 
