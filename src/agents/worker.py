@@ -13,6 +13,8 @@ from agents.prompts import build_system_prompt
 from flow_types import ToolCallRecord, WorkerStatus
 from llm.client import LLMClient
 from policy.dangerous_tools import is_side_effectful, tool_risk
+from policy.tool_approval import build_approval_request, tool_approval_mode_from_env
+from policy.tool_loop_detection import ToolLoopDetector, ToolLoopSettings, normalize_signature, stable_args_hash
 from replay import ReplayRecorder
 from tools.base import ToolResult
 from tracing import TraceLogger
@@ -66,6 +68,9 @@ class Worker:
         tool_call_cache: dict[str, ToolCallRecord] = {}
         touched_files: set[str] = set()
         schema_repairs = 0
+        tool_loop_settings = ToolLoopSettings.from_env()
+        tool_loop_detector = ToolLoopDetector(tool_loop_settings) if tool_loop_settings.enabled else None
+        tool_approval_mode = tool_approval_mode_from_env()
         trace_base = _trace_base(
             {
                 "worker_role": self.role,
@@ -125,6 +130,7 @@ class Worker:
                     action = str(call.get("action", ""))
                     raw_args = call.get("args", {}) or {}
                     args = raw_args if isinstance(raw_args, dict) else {}
+                    args_hash = stable_args_hash(args)
                     call_id = _coerce_tool_call_id(call)
                     policy_decision = _tool_policy_decision(tool_name, action, args)
                     cache_key = _tool_call_cache_key(tool_name, action, args) if _is_side_effectful_tool_call(tool_name, action) else None
@@ -137,6 +143,126 @@ class Worker:
                             "call": _truncate_jsonish(call, max_str=4_000, max_list=50, max_depth=4),
                         },
                     )
+                    if tool_approval_mode != "off" and bool(policy_decision.get("requires_approval")):
+                        approval_request = build_approval_request(
+                            tool=tool_name,
+                            action=action,
+                            args_hash=args_hash,
+                            args_preview=_truncate_jsonish(args, max_str=500, max_list=20, max_depth=3),
+                            reason=str(policy_decision.get("reason") or "approval required"),
+                        )
+                        if tool_approval_mode == "block":
+                            elapsed_ms = (time.perf_counter() - start) * 1000
+                            _trace_log(
+                                trace,
+                                "worker_tool_approval_blocked",
+                                {
+                                    **trace_base,
+                                    "iteration": iteration,
+                                    "approval_request": approval_request,
+                                },
+                            )
+                            return finalize(
+                                WorkerOutput(
+                                status=WorkerStatus.BLOCKED,
+                                summary=f"tool call requires approval: {tool_name}.{action}",
+                                artifacts=[],
+                                metrics={
+                                    "elapsed_ms": elapsed_ms,
+                                    "model_calls": model_calls,
+                                    "tool_calls": len(tool_call_records),
+                                    "iteration_count": iteration,
+                                    "tool_call_records": [record.__dict__ for record in tool_call_records],
+                                    "touched_files": sorted(touched_files),
+                                    "schema_repairs": schema_repairs,
+                                    "approval_request": approval_request,
+                                },
+                                next_actions=[
+                                    "Re-run with TOKIMON_TOOL_APPROVAL_MODE=off to allow tool execution.",
+                                    "Or run in an environment that supports operator approvals (not implemented in this runtime).",
+                                ],
+                                failure_signature="worker-tool-approval-blocked",
+                                )
+                            )
+                        if tool_approval_mode == "deny":
+                            record = ToolCallRecord(
+                                tool_name=tool_name or "<missing>",
+                                call_id=call_id,
+                                policy_decision=policy_decision,
+                                ok=False,
+                                summary="denied (approval required)",
+                                data={"action": action, "args_hash": args_hash, "approval_request": approval_request},
+                                elapsed_ms=0.0,
+                                cached=False,
+                                error="approval required",
+                            )
+                            tool_call_records.append(record)
+                            if replay_recorder is not None:
+                                replay_recorder.record_tool_invocation(call, record)
+                            _trace_log(
+                                trace,
+                                "worker_tool_result",
+                                {
+                                    **trace_base,
+                                    "iteration": iteration,
+                                    "tool_name": record.tool_name,
+                                    "tool_call_id": record.call_id,
+                                    "ok": record.ok,
+                                    "summary": record.summary,
+                                    "elapsed_ms": record.elapsed_ms,
+                                    "error": record.error,
+                                    "cached": record.cached,
+                                },
+                            )
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "name": record.tool_name,
+                                    "content": _format_tool_message(record),
+                                }
+                            )
+                            if tool_loop_detector is not None:
+                                signature = normalize_signature(tool_name, action, args_hash)
+                                trigger = tool_loop_detector.record(signature, ok=record.ok)
+                                if trigger is not None:
+                                    elapsed_ms = (time.perf_counter() - start) * 1000
+                                    failure_signature = f"worker-tool-loop-detected:{trigger.reason}"
+                                    _trace_log(
+                                        trace,
+                                        "worker_tool_loop_detected",
+                                        {
+                                            **trace_base,
+                                            "iteration": iteration,
+                                            "failure_signature": failure_signature,
+                                            "evidence": tool_loop_detector.evidence(trigger),
+                                        },
+                                    )
+                                    return finalize(
+                                        WorkerOutput(
+                                        status=WorkerStatus.PARTIAL,
+                                        summary=(
+                                            f"tool loop detected ({trigger.reason}) for "
+                                            f"{trigger.signature.tool}.{trigger.signature.action}"
+                                        ),
+                                        artifacts=[],
+                                        metrics={
+                                            "elapsed_ms": elapsed_ms,
+                                            "model_calls": model_calls,
+                                            "tool_calls": len(tool_call_records),
+                                            "iteration_count": iteration,
+                                            "tool_call_records": [record.__dict__ for record in tool_call_records],
+                                            "touched_files": sorted(touched_files),
+                                            "schema_repairs": schema_repairs,
+                                            "tool_loop_detection": tool_loop_detector.evidence(trigger),
+                                        },
+                                        next_actions=[
+                                            "Change strategy to avoid repeating identical tool calls.",
+                                            "If necessary, disable detection by setting TOKIMON_TOOL_LOOP_DETECTION_ENABLED=false.",
+                                        ],
+                                        failure_signature=failure_signature,
+                                        )
+                                    )
+                            continue
                     touched_files.update(_touched_files_from_call(call))
                     if cache_key is not None and cache_key in tool_call_cache:
                         cached = tool_call_cache[cache_key]
@@ -180,6 +306,47 @@ class Worker:
                             "content": _format_tool_message(record),
                         }
                     )
+                    if tool_loop_detector is not None:
+                        signature = normalize_signature(tool_name, action, args_hash)
+                        trigger = tool_loop_detector.record(signature, ok=record.ok)
+                        if trigger is not None:
+                            elapsed_ms = (time.perf_counter() - start) * 1000
+                            failure_signature = f"worker-tool-loop-detected:{trigger.reason}"
+                            _trace_log(
+                                trace,
+                                "worker_tool_loop_detected",
+                                {
+                                    **trace_base,
+                                    "iteration": iteration,
+                                    "failure_signature": failure_signature,
+                                    "evidence": tool_loop_detector.evidence(trigger),
+                                },
+                            )
+                            return finalize(
+                                WorkerOutput(
+                                status=WorkerStatus.PARTIAL,
+                                summary=(
+                                    f"tool loop detected ({trigger.reason}) for "
+                                    f"{trigger.signature.tool}.{trigger.signature.action}"
+                                ),
+                                artifacts=[],
+                                metrics={
+                                    "elapsed_ms": elapsed_ms,
+                                    "model_calls": model_calls,
+                                    "tool_calls": len(tool_call_records),
+                                    "iteration_count": iteration,
+                                    "tool_call_records": [record.__dict__ for record in tool_call_records],
+                                    "touched_files": sorted(touched_files),
+                                    "schema_repairs": schema_repairs,
+                                    "tool_loop_detection": tool_loop_detector.evidence(trigger),
+                                },
+                                next_actions=[
+                                    "Change strategy to avoid repeating identical tool calls.",
+                                    "If necessary, disable detection by setting TOKIMON_TOOL_LOOP_DETECTION_ENABLED=false.",
+                                ],
+                                failure_signature=failure_signature,
+                                )
+                            )
                 continue
 
             try:
