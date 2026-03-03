@@ -288,6 +288,19 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
     - `deny`: if the tool call's `approval_id` is in the allowlist, the call proceeds as if approved; otherwise a deterministic tool error is recorded and the loop continues.
   - When a pre-approved call proceeds, the `policy_decision` MUST include `"pre_approved": true` and `"allowlist_source"` (either `"env"` or `"file"`) so the decision is auditable.
   - Allowlist loading MUST be deterministic and fail-safe: malformed JSON in the file or missing file is treated as an empty allowlist (no error raised).
+- Tokimon SHOULD provide an operator CLI for managing approval allowlist files without manual JSON edits.
+  - Command group: `tokimon approvals`
+  - Subcommands:
+    - `tokimon approvals list` prints the effective allowlist set (env + file) and indicates the source for each entry.
+    - `tokimon approvals add <approval_id>` adds an approval id to the file allowlist (idempotent) and prints the updated allowlist.
+    - `tokimon approvals remove <approval_id>` removes an approval id from the file allowlist (no-op when missing) and prints the updated allowlist.
+    - `tokimon approvals clear` clears the file allowlist and prints the updated allowlist.
+  - Output:
+    - Default: human-readable.
+    - `--json` emits stable machine-readable JSON with sorted keys and deterministic ordering.
+  - Persistence:
+    - The CLI MUST manage the file allowlist at `.tokimon-tmp/approvals/allowlist.json` relative to the Tokimon workspace root.
+    - When adding/removing, the CLI MUST create parent directories as needed.
 
 ### Observability: Metrics & Dashboards
 - Tokimon MUST persist canonical run/step metrics and a self-contained dashboard artifact for every BaselineRunner, HierarchicalRunner, and Chat UI run.
@@ -352,7 +365,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Metrics include at least: pass/fail counts, wall time, model calls, tool calls, and Lessons produced.
 
 ### CLI
-- Commands: auto, run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui, gateway, memory, sessions, status, doctor, health, logs.
+- Commands: auto, run-task, run-suite, resume-run, inspect-run, list-skills, build-skill, self-improve, chat-ui, gateway, memory, sessions, status, doctor, health, logs, approvals.
 - Prompt-driven entrypoint: `tokimon auto "<prompt>"` routes to the appropriate mode by asking an AI router (Codex/Claude) to return a concrete Tokimon argv list.
   - Output contract: the router returns JSON containing `argv: string[]` (argv excludes the leading `tokimon`).
   - Validation: Tokimon MUST validate the router argv against the CLI parser (unknown commands/options are rejected) and MUST prevent `auto` recursion.
