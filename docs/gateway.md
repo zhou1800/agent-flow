@@ -90,9 +90,21 @@ Gateway responds:
 
 ### Token auth (optional)
 
-- When `TOKIMON_GATEWAY_AUTH_TOKEN` is configured on the server, the client MUST include:
+- When `TOKIMON_GATEWAY_AUTH_TOKEN` is configured on the server, the client MUST include one of:
   - `connect.params.auth = { "mode": "token", "credential": "<token>" }`
+  - `connect.params.auth = { "token": "<token>" }` (OpenClaw-style)
 - When `TOKIMON_GATEWAY_AUTH_TOKEN` is not configured, `connect.params.auth` is optional and ignored.
+
+### Optional connect params (accepted; semantics ignored in Phase 1)
+
+The server accepts (and type-checks) these optional `connect.params` fields:
+
+- `caps` (list)
+- `commands` (list)
+- `permissions` (object)
+- `locale` (string)
+- `userAgent` (string)
+- `device` (object)
 
 ## JSON-schema validation (Phase 1)
 
@@ -145,7 +157,7 @@ Response payload includes `status`, `reply`, and other worker output fields.
 ## TODO (Phase 2, docs only)
 
 - Device identity + signatures (challenge signing).
-- Explicit `node` role, caps/commands/permissions, presence APIs.
+- Explicit `node` role and semantics for `caps`/`commands`/`permissions`, presence APIs.
 - Multi-channel connectors and server-push events beyond handshake.
 
 ## Tests

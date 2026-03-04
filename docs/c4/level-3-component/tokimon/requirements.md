@@ -469,7 +469,8 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - On socket open, the server emits `connect.challenge`.
   - The first client request MUST be `connect` and MUST pass protocol version validation.
   - The client MUST echo the `connect.challenge` nonce in `connect.params.challenge.nonce`; mismatches MUST be rejected.
-  - When `TOKIMON_GATEWAY_AUTH_TOKEN` is configured, the server MUST require `connect.params.auth = {mode:"token", credential:"..."}` and verify via constant-time compare.
+  - When `TOKIMON_GATEWAY_AUTH_TOKEN` is configured, the server MUST require `connect.params.auth` to be either `{mode:"token", credential:"..."}` or `{token:"..."}` and verify via constant-time compare.
+  - The server MUST accept optional `connect.params` fields: `caps`, `commands`, `permissions`, `locale`, `userAgent`, `device` (type-check deterministically; ignore semantics in Phase 1).
 - Phase 1 methods:
   - `health`: returns `{ok:true}`
   - `send`: invokes the same logic as `/api/send` and requires an idempotency key.

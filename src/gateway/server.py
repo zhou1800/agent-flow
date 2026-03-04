@@ -277,7 +277,13 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                 return
             if require_auth:
                 auth = params.get("auth") or {}
-                credential = str(auth.get("credential") or "")
+                credential = ""
+                if isinstance(auth, dict):
+                    token = auth.get("token")
+                    if isinstance(token, str):
+                        credential = token
+                    else:
+                        credential = str(auth.get("credential") or "")
                 expected = str(getattr(self.server, "auth_token") or "")
                 if not expected or not secrets.compare_digest(credential, expected):
                     self._ws_send_res_error(req_id, "unauthorized", details={"code": "AUTH_INVALID"})
@@ -537,15 +543,53 @@ def _validate_connect_params(params: dict[str, Any], *, require_auth: bool) -> l
         if not isinstance(auth, dict):
             errors.append("auth must be an object")
         else:
+            has_token = "token" in auth
+            token = auth.get("token")
+            has_credential = "credential" in auth or "mode" in auth
             mode = auth.get("mode")
-            if mode != "token":
-                errors.append("auth.mode must be 'token'")
             credential = auth.get("credential")
-            if not isinstance(credential, str) or not credential.strip():
-                errors.append("auth.credential must be a non-empty string")
+            token_ok = isinstance(token, str) and bool(token.strip())
+            credential_ok = mode == "token" and isinstance(credential, str) and bool(credential.strip())
+            if not (token_ok or credential_ok):
+                if has_token:
+                    errors.append("auth.token must be a non-empty string")
+                if has_credential:
+                    if mode != "token":
+                        errors.append("auth.mode must be 'token'")
+                    if not isinstance(credential, str) or not credential.strip():
+                        errors.append("auth.credential must be a non-empty string")
+                if not has_token and not has_credential:
+                    errors.append("auth must be {mode:'token', credential:'...'} or {token:'...'}")
     scopes = params.get("scopes")
     if scopes is not None and not isinstance(scopes, list):
         errors.append("scopes must be a list")
+    if "caps" in params:
+        caps = params.get("caps")
+        if not isinstance(caps, list):
+            errors.append("caps must be a list")
+        elif not all(isinstance(item, str) for item in caps):
+            errors.append("caps entries must be strings")
+    if "commands" in params:
+        commands = params.get("commands")
+        if not isinstance(commands, list):
+            errors.append("commands must be a list")
+        elif not all(isinstance(item, str) for item in commands):
+            errors.append("commands entries must be strings")
+    if "permissions" in params:
+        permissions = params.get("permissions")
+        if not isinstance(permissions, dict):
+            errors.append("permissions must be an object")
+        else:
+            if not all(isinstance(key, str) for key in permissions.keys()):
+                errors.append("permissions keys must be strings")
+            if not all(isinstance(value, bool) for value in permissions.values()):
+                errors.append("permissions values must be bools")
+    if "locale" in params and not isinstance(params.get("locale"), str):
+        errors.append("locale must be a string")
+    if "userAgent" in params and not isinstance(params.get("userAgent"), str):
+        errors.append("userAgent must be a string")
+    if "device" in params and not isinstance(params.get("device"), dict):
+        errors.append("device must be an object")
     return errors
 
 
