@@ -207,24 +207,88 @@ def test_gateway_ws_handshake_health_and_send(tmp_path: Path) -> None:
             assert hello["ok"] is True
             assert hello["payload"]["protocol"] == 1
 
-            ws.send_json({"type": "req", "id": "2", "method": "health", "params": {}})
+            ws.send_json({"type": "req", "id": "2", "method": "methods.list", "params": {}})
+            methods = ws.recv_json()
+            assert methods["type"] == "res"
+            assert methods["id"] == "2"
+            assert methods["ok"] is True
+            assert methods["payload"]["methods"] == ["health", "logs.tail", "methods.list", "send", "tools.catalog"]
+
+            ws.send_json({"type": "req", "id": "3", "method": "tools.catalog", "params": {}})
+            catalog = ws.recv_json()
+            assert catalog["type"] == "res"
+            assert catalog["id"] == "3"
+            assert catalog["ok"] is True
+            assert catalog["payload"]["tools"] == [
+                {
+                    "tool": "file",
+                    "action": "read",
+                    "risk_tier": "low",
+                    "requires_approval": False,
+                    "notes": "read-only workspace access",
+                },
+                {
+                    "tool": "file",
+                    "action": "write",
+                    "risk_tier": "high",
+                    "requires_approval": True,
+                    "notes": "writes to workspace",
+                },
+                {
+                    "tool": "grep",
+                    "action": "search",
+                    "risk_tier": "low",
+                    "requires_approval": False,
+                    "notes": "bounded repo search",
+                },
+                {
+                    "tool": "patch",
+                    "action": "apply",
+                    "risk_tier": "high",
+                    "requires_approval": True,
+                    "notes": "applies patches to workspace",
+                },
+                {
+                    "tool": "pytest",
+                    "action": "run",
+                    "risk_tier": "medium",
+                    "requires_approval": False,
+                    "notes": "executes local tests",
+                },
+                {
+                    "tool": "web",
+                    "action": "fetch",
+                    "risk_tier": "medium",
+                    "requires_approval": False,
+                    "notes": "network access",
+                },
+                {
+                    "tool": "web",
+                    "action": "search",
+                    "risk_tier": "medium",
+                    "requires_approval": False,
+                    "notes": "network access",
+                },
+            ]
+
+            ws.send_json({"type": "req", "id": "4", "method": "health", "params": {}})
             health = ws.recv_json()
             assert health["type"] == "res"
-            assert health["id"] == "2"
+            assert health["id"] == "4"
             assert health["ok"] is True
             assert health["payload"]["ok"] is True
 
             ws.send_json(
                 {
                     "type": "req",
-                    "id": "3",
+                    "id": "5",
                     "method": "send",
                     "params": {"idempotencyKey": "k1", "message": "hello", "history": []},
                 }
             )
             sent = ws.recv_json(timeout_s=10.0)
             assert sent["type"] == "res"
-            assert sent["id"] == "3"
+            assert sent["id"] == "5"
             assert sent["ok"] is True
             assert sent["payload"]["reply"] == "mock response"
             assert sent["payload"]["status"] in {"PARTIAL", "SUCCESS", "FAILURE", "BLOCKED"}

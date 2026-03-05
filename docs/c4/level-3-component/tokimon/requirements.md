@@ -473,6 +473,8 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - The server MUST accept optional `connect.params` fields: `caps`, `commands`, `permissions`, `locale`, `userAgent`, `device` (type-check deterministically; ignore semantics in Phase 1).
 - Phase 1 methods:
   - `health`: returns `{ok:true}`
+  - `methods.list`: returns the server-supported methods (excluding `connect`) in deterministic order.
+  - `tools.catalog`: returns a deterministic tool/action risk catalog derived from `src/policy/dangerous_tools.py`.
   - `send`: invokes the same logic as `/api/send` and requires an idempotency key.
   - `logs.tail`: returns recent log entries from an in-memory ring buffer.
 - The Gateway protocol surface and Phase 2 TODOs are documented in `docs/gateway.md`.

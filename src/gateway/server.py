@@ -26,6 +26,7 @@ from llm.client import ClaudeCLISettings
 from llm.client import CodexCLIClient
 from llm.client import CodexCLISettings
 from llm.client import build_llm_client
+from policy.dangerous_tools import tool_catalog
 from tools.file_tool import FileTool
 from tools.grep_tool import GrepTool
 from tools.patch_tool import PatchTool
@@ -38,6 +39,7 @@ _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_WS_FRAME_BYTES = 2_000_000
 _MAX_IDEMPOTENCY_ENTRIES = 128
 _MAX_LOG_ENTRIES = 512
+_PHASE1_WS_METHODS = ("health", "logs.tail", "methods.list", "send", "tools.catalog")
 
 
 @dataclass(frozen=True)
@@ -324,6 +326,26 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                     continue
                 if method == "health":
                     self._ws_send_json({"type": "res", "id": req_id, "ok": True, "payload": {"ok": True}})
+                    continue
+                if method == "methods.list":
+                    self._ws_send_json(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": {"methods": list(_PHASE1_WS_METHODS)},
+                        }
+                    )
+                    continue
+                if method == "tools.catalog":
+                    self._ws_send_json(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": {"tools": tool_catalog()},
+                        }
+                    )
                     continue
                 if method == "logs.tail":
                     tail_errors = _validate_logs_tail_params(params)

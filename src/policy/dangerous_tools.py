@@ -7,7 +7,7 @@ to avoid policy drift across runtimes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 
 RiskTier = Literal["low", "medium", "high"]
@@ -33,6 +33,21 @@ _REGISTRY: dict[tuple[str, str], ToolRisk] = {
     ("web", "fetch"): ToolRisk(risk_tier="medium", requires_approval=False, notes="network access"),
     ("web", "search"): ToolRisk(risk_tier="medium", requires_approval=False, notes="network access"),
 }
+
+
+def tool_catalog() -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for (tool_name, action), risk in sorted(_REGISTRY.items()):
+        catalog.append(
+            {
+                "tool": tool_name,
+                "action": action,
+                "risk_tier": risk.risk_tier,
+                "requires_approval": risk.requires_approval,
+                "notes": risk.notes,
+            }
+        )
+    return catalog
 
 
 def tool_risk(tool_name: str, action: str) -> ToolRisk | None:

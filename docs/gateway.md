@@ -154,6 +154,65 @@ Request params:
 
 Response payload includes `status`, `reply`, and other worker output fields.
 
+### `logs.tail`
+
+Returns recent log entries from an in-memory ring buffer.
+
+Request params:
+
+- `limit` (int, optional; default: 200)
+- `after` (int, optional; return only entries with `id > after`)
+
+Response payload:
+
+```json
+{ "entries": [{ "id": 1, "ts_ms": 1737264000000, "event": "send", "payload": {} }], "cursor": 12 }
+```
+
+### `methods.list`
+
+Returns the list of server-supported WebSocket RPC methods (excluding `connect`)
+in deterministic order.
+
+Request:
+
+```json
+{ "type": "req", "id": "4", "method": "methods.list", "params": {} }
+```
+
+Response payload:
+
+```json
+{ "methods": ["health", "logs.tail", "methods.list", "send", "tools.catalog"] }
+```
+
+### `tools.catalog`
+
+Returns a deterministic catalog of tool/action pairs and their risk
+classification derived from `src/policy/dangerous_tools.py`.
+
+Request:
+
+```json
+{ "type": "req", "id": "5", "method": "tools.catalog", "params": {} }
+```
+
+Response payload:
+
+```json
+{
+  "tools": [
+    {
+      "tool": "file",
+      "action": "read",
+      "risk_tier": "low",
+      "requires_approval": false,
+      "notes": "read-only workspace access"
+    }
+  ]
+}
+```
+
 ## TODO (Phase 2, docs only)
 
 - Device identity + signatures (challenge signing).
@@ -164,7 +223,7 @@ Response payload includes `status`, `reply`, and other worker output fields.
 
 Gateway WS contract is covered by deterministic pytest tests:
 
-- `src/tests/test_gateway_ws.py` covers: handshake + health + send
+- `src/tests/test_gateway_ws.py` covers: handshake + health + methods.list + tools.catalog + send
 
 Run:
 
