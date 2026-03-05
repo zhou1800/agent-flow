@@ -311,6 +311,82 @@ def test_gateway_ws_handshake_health_and_send(tmp_path: Path) -> None:
         server.stop()
 
 
+def test_gateway_ws_protocol_v3_methods_and_presence(tmp_path: Path) -> None:
+    config = GatewayConfig(host="127.0.0.1", port=0, llm_provider="codex", workspace_dir=tmp_path)
+    try:
+        server = GatewayServer(config)
+    except PermissionError as exc:
+        pytest.skip(f"socket operations not permitted in this environment: {exc}")
+    server.start()
+    try:
+        _wait_for_healthz(server.url)
+
+        ws = _ws_connect(server.host, server.port)
+        try:
+            challenge = ws.recv_json()
+            assert challenge["type"] == "event"
+            assert challenge["event"] == "connect.challenge"
+            nonce = challenge.get("payload", {}).get("nonce")
+            assert isinstance(nonce, str)
+            assert nonce
+
+            ws.send_json(
+                {
+                    "type": "req",
+                    "id": "1",
+                    "method": "connect",
+                    "params": {
+                        "minProtocol": 1,
+                        "maxProtocol": 3,
+                        "challenge": {"nonce": nonce},
+                        "client": {"id": "pytest-v3", "version": "0", "platform": "linux", "mode": "operator"},
+                        "device": {"id": "pytest-v3"},
+                        "role": "operator",
+                        "scopes": ["operator.read"],
+                    },
+                }
+            )
+            hello = ws.recv_json()
+            assert hello["type"] == "res"
+            assert hello["id"] == "1"
+            assert hello["ok"] is True
+            assert hello["payload"]["protocol"] == 3
+
+            ws.send_json({"type": "req", "id": "2", "method": "methods.list", "params": {}})
+            methods = ws.recv_json()
+            assert methods["type"] == "res"
+            assert methods["id"] == "2"
+            assert methods["ok"] is True
+            assert methods["payload"]["methods"] == [
+                "health",
+                "logs.tail",
+                "methods.list",
+                "send",
+                "tools.catalog",
+                "system-presence",
+            ]
+
+            ws.send_json({"type": "req", "id": "3", "method": "system-presence", "params": {}})
+            presence = ws.recv_json()
+            assert presence["type"] == "res"
+            assert presence["id"] == "3"
+            assert presence["ok"] is True
+            connections = presence["payload"]["connections"]
+            assert isinstance(connections, list)
+            assert connections == [
+                {
+                    "device": {"id": "pytest-v3"},
+                    "role": "operator",
+                    "scopes": ["operator.read"],
+                    "client": {"id": "pytest-v3", "version": "0", "platform": "linux", "mode": "operator"},
+                }
+            ]
+        finally:
+            ws.close()
+    finally:
+        server.stop()
+
+
 def test_gateway_ws_rejects_challenge_mismatch(tmp_path: Path) -> None:
     config = GatewayConfig(host="127.0.0.1", port=0, llm_provider="codex", workspace_dir=tmp_path)
     try:

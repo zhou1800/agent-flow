@@ -5,8 +5,8 @@ Tokimon Gateway is a local server mode that exposes:
 - Existing Chat UI HTTP endpoints: `GET /healthz`, `POST /api/send`
 - A new WebSocket control plane endpoint: `GET /gateway` (WS upgrade)
 
-This is inspired by OpenClaw's Gateway protocol, but is intentionally minimal
-in Phase 1.
+This is inspired by OpenClaw's Gateway protocol, but is intentionally minimal.
+Phase 2 adds protocol negotiation up to v3 and a basic presence snapshot.
 
 ## CLI
 
@@ -56,7 +56,7 @@ The client must then send a `connect` request as its first frame:
   "method": "connect",
   "params": {
     "minProtocol": 1,
-    "maxProtocol": 1,
+    "maxProtocol": 3,
     "challenge": { "nonce": "…" },
     "client": { "id": "cli", "version": "0.1.0", "platform": "linux", "mode": "operator" },
     "auth": { "mode": "token", "credential": "…" },
@@ -73,15 +73,17 @@ Gateway responds:
   "type": "res",
   "id": "1",
   "ok": true,
-  "payload": { "type": "hello-ok", "protocol": 1, "policy": { "tickIntervalMs": 15000 } }
+  "payload": { "type": "hello-ok", "protocol": 3, "policy": { "tickIntervalMs": 15000 } }
 }
 ```
 
 ### Protocol versioning
 
-- `PROTOCOL_VERSION = 1` for Phase 1.
-- The server accepts the connection only if `minProtocol <= PROTOCOL_VERSION <= maxProtocol`.
-- On mismatch, the server responds with `ok=false` and closes the socket.
+- The server supports protocol versions `1..3`.
+- Clients send `connect.params.minProtocol` and `connect.params.maxProtocol`.
+- The server selects the highest common supported version in the inclusive range.
+- `hello-ok.payload.protocol` is the negotiated protocol.
+- If there is no overlap, the server responds with `ok=false` and closes the socket.
 
 ### Challenge echo
 
@@ -95,7 +97,7 @@ Gateway responds:
   - `connect.params.auth = { "token": "<token>" }` (OpenClaw-style)
 - When `TOKIMON_GATEWAY_AUTH_TOKEN` is not configured, `connect.params.auth` is optional and ignored.
 
-### Optional connect params (accepted; semantics ignored in Phase 1)
+### Optional connect params (accepted; semantics mostly ignored)
 
 The server accepts (and type-checks) these optional `connect.params` fields:
 
@@ -105,6 +107,8 @@ The server accepts (and type-checks) these optional `connect.params` fields:
 - `locale` (string)
 - `userAgent` (string)
 - `device` (object)
+  - Accepted keys (all optional): `id` (string), `publicKey` (string), `signature` (string), `signedAt` (int), `nonce` (string)
+  - TODO: signature verification / challenge signing is not implemented yet.
 
 ## JSON-schema validation (Phase 1)
 
@@ -125,7 +129,7 @@ Side-effecting methods must include an idempotency key:
 - Repeating the same `idempotencyKey` on the same connection returns the cached
   payload from the first call.
 
-## Methods (Phase 1)
+## Methods
 
 ### `health`
 
@@ -172,7 +176,10 @@ Response payload:
 ### `methods.list`
 
 Returns the list of server-supported WebSocket RPC methods (excluding `connect`)
-in deterministic order.
+in deterministic order, gated by the negotiated protocol version:
+
+- Protocol `1` (and `2`): Phase 1 method list.
+- Protocol `3`: Phase 1 list plus `system-presence`.
 
 Request:
 
@@ -185,6 +192,33 @@ Response payload:
 ```json
 { "methods": ["health", "logs.tail", "methods.list", "send", "tools.catalog"] }
 ```
+
+### `system-presence` (protocol 3 only)
+
+Returns a deterministic snapshot of active WebSocket connections.
+
+Request:
+
+```json
+{ "type": "req", "id": "6", "method": "system-presence", "params": {} }
+```
+
+Response payload:
+
+```json
+{
+  "connections": [
+    {
+      "device": { "id": "pytest-v3" },
+      "role": "operator",
+      "scopes": ["operator.read"],
+      "client": { "id": "pytest-v3", "version": "0", "platform": "linux", "mode": "operator" }
+    }
+  ]
+}
+```
+
+Ordering is stable and deterministic (sorted by `device.id`, then `role`, then `client.id`, then connection arrival order).
 
 ### `tools.catalog`
 
@@ -213,17 +247,17 @@ Response payload:
 }
 ```
 
-## TODO (Phase 2, docs only)
+## TODO (Future phases)
 
-- Device identity + signatures (challenge signing).
-- Explicit `node` role and semantics for `caps`/`commands`/`permissions`, presence APIs.
+- Device identity + signatures (challenge signing / verification).
+- Explicit `node` role and semantics for `caps`/`commands`/`permissions` and richer presence APIs.
 - Multi-channel connectors and server-push events beyond handshake.
 
 ## Tests
 
 Gateway WS contract is covered by deterministic pytest tests:
 
-- `src/tests/test_gateway_ws.py` covers: handshake + health + methods.list + tools.catalog + send
+- `src/tests/test_gateway_ws.py` covers: handshake + protocol negotiation + health + methods.list (protocol-gated) + tools.catalog + send + system-presence
 
 Run:
 

@@ -450,7 +450,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - The chat handler uses the same tool set as the hierarchical runner (file, grep, patch, pytest, web).
 - Default LLM provider for `chat-ui` and `gateway` is `codex`; `--llm claude` (or `TOKIMON_LLM=claude`) selects the Claude CLI-backed client instead.
 
-### Gateway Server (OpenClaw-Inspired, Phase 1)
+### Gateway Server (OpenClaw-Inspired, Phase 1/2)
 - `tokimon gateway` starts a local server that supports:
   - Existing Chat UI HTTP endpoints: `GET /healthz`, `POST /api/send`
   - A WebSocket control-plane endpoint at `GET /gateway` (WS upgrade)
@@ -468,17 +468,25 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - Event: `{type:"event", event, payload}`
 - Handshake:
   - On socket open, the server emits `connect.challenge`.
-  - The first client request MUST be `connect` and MUST pass protocol version validation.
+  - The first client request MUST be `connect` and MUST pass protocol negotiation:
+    - The server supports protocol versions `1..3`.
+    - The server selects the highest common supported version within `[connect.params.minProtocol, connect.params.maxProtocol]`.
+    - `hello-ok.payload.protocol` MUST be the selected version.
+    - On mismatch, the server responds with `ok=false` and closes the socket.
   - The client MUST echo the `connect.challenge` nonce in `connect.params.challenge.nonce`; mismatches MUST be rejected.
   - When `TOKIMON_GATEWAY_AUTH_TOKEN` is configured, the server MUST require `connect.params.auth` to be either `{mode:"token", credential:"..."}` or `{token:"..."}` and verify via constant-time compare.
-  - The server MUST accept optional `connect.params` fields: `caps`, `commands`, `permissions`, `locale`, `userAgent`, `device` (type-check deterministically; ignore semantics in Phase 1).
-- Phase 1 methods:
+  - The server MUST accept optional `connect.params` fields: `caps`, `commands`, `permissions`, `locale`, `userAgent`, `device` (type-check deterministically; signature verification is TODO).
+- Methods:
   - `health`: returns `{ok:true}`
-  - `methods.list`: returns the server-supported methods (excluding `connect`) in deterministic order.
+  - `methods.list`: returns the server-supported methods (excluding `connect`) in deterministic order, gated by negotiated protocol (protocol v1 keeps the Phase 1 list; protocol v3 adds `system-presence`).
+  - `system-presence` (protocol v3 only): returns a deterministic snapshot (stable ordering) of active WS connections including device id, role, scopes, and client metadata.
   - `tools.catalog`: returns a deterministic tool/action risk catalog derived from `src/policy/dangerous_tools.py`.
   - `send`: invokes the same logic as `/api/send` and requires an idempotency key.
   - `logs.tail`: returns recent log entries from an in-memory ring buffer.
 - The Gateway protocol surface and Phase 2 TODOs are documented in `docs/gateway.md`.
+- Acceptance tests:
+  - `src/tests/test_gateway_ws.py::test_gateway_ws_handshake_health_and_send` asserts a v1 connect flow with `hello-ok.payload.protocol == 1` and `methods.list` returning the Phase 1 list.
+  - `src/tests/test_gateway_ws.py::test_gateway_ws_protocol_v3_methods_and_presence` asserts protocol negotiation selects v3, `methods.list` includes `system-presence`, and `system-presence` includes the current connection.
 
 ### Self-Improvement Mode (Multi-Session / Batch)
 - When invoked with a self-improvement goal, the system can accept optional “inputs”:

@@ -33,7 +33,9 @@ from tools.patch_tool import PatchTool
 from tools.pytest_tool import PytestTool
 from tools.web_tool import WebTool
 
-PROTOCOL_VERSION = 1
+_SUPPORTED_PROTOCOLS = (1, 2, 3)
+_SUPPORTED_PROTOCOL_MIN = _SUPPORTED_PROTOCOLS[0]
+_SUPPORTED_PROTOCOL_MAX = _SUPPORTED_PROTOCOLS[-1]
 _TICK_INTERVAL_MS = 15_000
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_WS_FRAME_BYTES = 2_000_000
@@ -74,6 +76,45 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
         self._log_lock = threading.Lock()
         self._log_entries: deque[dict[str, Any]] = deque(maxlen=_MAX_LOG_ENTRIES)
         self._log_next_id = 1
+        self._ws_presence_lock = threading.Lock()
+        self._ws_presence_next_id = 1
+        self._ws_presence: dict[int, dict[str, Any]] = {}
+
+    def register_ws_presence(self, entry: dict[str, Any]) -> int:
+        with self._ws_presence_lock:
+            presence_id = self._ws_presence_next_id
+            self._ws_presence_next_id += 1
+            self._ws_presence[presence_id] = entry
+            return presence_id
+
+    def unregister_ws_presence(self, presence_id: int) -> None:
+        with self._ws_presence_lock:
+            self._ws_presence.pop(int(presence_id), None)
+
+    def ws_presence_snapshot(self) -> list[dict[str, Any]]:
+        with self._ws_presence_lock:
+            items = list(self._ws_presence.items())
+
+        def sort_key(item: tuple[int, dict[str, Any]]) -> tuple[str, str, str, int]:
+            presence_id, entry = item
+            device_id = ""
+            device = entry.get("device")
+            if isinstance(device, dict):
+                maybe = device.get("id")
+                if isinstance(maybe, str):
+                    device_id = maybe
+            role = entry.get("role")
+            role_str = role if isinstance(role, str) else ""
+            client_id = ""
+            client = entry.get("client")
+            if isinstance(client, dict):
+                maybe = client.get("id")
+                if isinstance(maybe, str):
+                    client_id = maybe
+            return (device_id, role_str, client_id, presence_id)
+
+        items.sort(key=sort_key)
+        return [entry for _presence_id, entry in items]
 
     def record_log(self, event: str, payload: dict[str, Any] | None = None) -> None:
         event = str(event or "").strip() or "event"
@@ -260,6 +301,8 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         connected = False
         idempotency_cache: dict[str, dict[str, Any]] = {}
         require_auth = bool(getattr(self.server, "auth_token", None))
+        negotiated_protocol: int | None = None
+        presence_id: int | None = None
 
         try:
             first = self._ws_recv_json()
@@ -292,28 +335,44 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                     return
             min_protocol = int(params["minProtocol"])
             max_protocol = int(params["maxProtocol"])
-            if not (min_protocol <= PROTOCOL_VERSION <= max_protocol):
+            selected_protocol = _negotiate_protocol(min_protocol=min_protocol, max_protocol=max_protocol)
+            if selected_protocol is None:
                 self._ws_send_res_error(
                     req_id,
                     "protocol version mismatch",
-                    details={"code": "PROTOCOL_VERSION_MISMATCH", "server": PROTOCOL_VERSION, "min": min_protocol, "max": max_protocol},
+                    details={
+                        "code": "PROTOCOL_VERSION_MISMATCH",
+                        "supported": {"min": _SUPPORTED_PROTOCOL_MIN, "max": _SUPPORTED_PROTOCOL_MAX},
+                        "min": min_protocol,
+                        "max": max_protocol,
+                    },
                 )
                 return
+            negotiated_protocol = selected_protocol
             self._ws_send_json(
                 {
                     "type": "res",
                     "id": req_id,
                     "ok": True,
-                    "payload": {"type": "hello-ok", "protocol": PROTOCOL_VERSION, "policy": {"tickIntervalMs": _TICK_INTERVAL_MS}},
+                    "payload": {"type": "hello-ok", "protocol": negotiated_protocol, "policy": {"tickIntervalMs": _TICK_INTERVAL_MS}},
                 }
             )
             try:
                 self.server.record_log(
                     "connect.ok",
-                    {"client": params.get("client"), "role": params.get("role"), "scopes": params.get("scopes")},
+                    {
+                        "client": params.get("client"),
+                        "protocol": negotiated_protocol,
+                        "role": params.get("role"),
+                        "scopes": params.get("scopes"),
+                    },
                 )
             except Exception:
                 pass
+            try:
+                presence_id = self.server.register_ws_presence(_presence_entry_from_connect_params(params))
+            except Exception:
+                presence_id = None
             connected = True
 
             while True:
@@ -328,12 +387,29 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                     self._ws_send_json({"type": "res", "id": req_id, "ok": True, "payload": {"ok": True}})
                     continue
                 if method == "methods.list":
+                    methods = list(_PHASE1_WS_METHODS)
+                    if negotiated_protocol is not None and negotiated_protocol >= 3:
+                        methods.append("system-presence")
                     self._ws_send_json(
                         {
                             "type": "res",
                             "id": req_id,
                             "ok": True,
-                            "payload": {"methods": list(_PHASE1_WS_METHODS)},
+                            "payload": {"methods": methods},
+                        }
+                    )
+                    continue
+                if method == "system-presence":
+                    if negotiated_protocol is None or negotiated_protocol < 3:
+                        self._ws_send_res_error(req_id, f"unknown method: {method}", details={"code": "METHOD_NOT_FOUND"})
+                        continue
+                    snapshot = self.server.ws_presence_snapshot()
+                    self._ws_send_json(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": {"connections": snapshot},
                         }
                     )
                     continue
@@ -390,6 +466,11 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                 pass
             return
         finally:
+            if presence_id is not None:
+                try:
+                    self.server.unregister_ws_presence(presence_id)
+                except Exception:
+                    pass
             self.close_connection = True
 
     def _read_json(self) -> dict[str, Any]:
@@ -534,6 +615,47 @@ def _parse_req_frame(frame: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     return req_id.strip(), method.strip(), params
 
 
+def _negotiate_protocol(*, min_protocol: int, max_protocol: int) -> int | None:
+    if min_protocol > max_protocol:
+        return None
+    for protocol in reversed(_SUPPORTED_PROTOCOLS):
+        if min_protocol <= protocol <= max_protocol:
+            return protocol
+    return None
+
+
+def _presence_entry_from_connect_params(params: dict[str, Any]) -> dict[str, Any]:
+    device_id: str | None = None
+    device = params.get("device")
+    if isinstance(device, dict):
+        maybe = device.get("id")
+        if isinstance(maybe, str) and maybe:
+            device_id = maybe
+
+    client_in = params.get("client")
+    client: dict[str, str] = {}
+    if isinstance(client_in, dict):
+        for key in ("id", "version", "platform", "mode"):
+            value = client_in.get(key)
+            if isinstance(value, str):
+                client[key] = value
+
+    scopes_in = params.get("scopes")
+    scopes: list[str] = []
+    if isinstance(scopes_in, list):
+        scopes = [str(scope) for scope in scopes_in]
+
+    role_in = params.get("role")
+    role = role_in if isinstance(role_in, str) else ""
+
+    return {
+        "device": {"id": device_id},
+        "role": role,
+        "scopes": scopes,
+        "client": client,
+    }
+
+
 def _validate_connect_params(params: dict[str, Any], *, require_auth: bool) -> list[str]:
     errors: list[str] = []
     min_protocol = params.get("minProtocol")
@@ -610,8 +732,21 @@ def _validate_connect_params(params: dict[str, Any], *, require_auth: bool) -> l
         errors.append("locale must be a string")
     if "userAgent" in params and not isinstance(params.get("userAgent"), str):
         errors.append("userAgent must be a string")
-    if "device" in params and not isinstance(params.get("device"), dict):
-        errors.append("device must be an object")
+    if "device" in params:
+        device = params.get("device")
+        if not isinstance(device, dict):
+            errors.append("device must be an object")
+        else:
+            if "id" in device and not isinstance(device.get("id"), str):
+                errors.append("device.id must be a string")
+            if "publicKey" in device and not isinstance(device.get("publicKey"), str):
+                errors.append("device.publicKey must be a string")
+            if "signature" in device and not isinstance(device.get("signature"), str):
+                errors.append("device.signature must be a string")
+            if "signedAt" in device and not isinstance(device.get("signedAt"), int):
+                errors.append("device.signedAt must be an int")
+            if "nonce" in device and not isinstance(device.get("nonce"), str):
+                errors.append("device.nonce must be a string")
     return errors
 
 
