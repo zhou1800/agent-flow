@@ -22,7 +22,6 @@ This document records the rules, conventions, and guardrails that govern work ac
 - Chain commands as `source .venv/bin/activate && <command>` when executing one-offs.
 - Do not bypass the doc-first workflow. Missing specs → propose a doc diff. Conflicts → call them out with file and line references before coding.
 - Keep local infrastructure actions read-only. Deployments happen through CI/CD or designated maintainers only.
-- AI assistants do not run `git commit`, `git push`, or tag operations unless the user explicitly directs it. Prepare changes; the user handles VCS writes.
 
 ## Coding Style & Naming Conventions
 - Python adheres to PEP 8 with 4-space indentation, type hints where practical, and descriptive module names. Remove dead code, keep functions focused, and sort imports.
