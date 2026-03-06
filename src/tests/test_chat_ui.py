@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 import urllib.request
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from chat_ui.server import ChatUIConfig, ChatUIServer
+import llm.client as llm_client
 from llm.client import MockLLMClient
 
 
@@ -105,5 +107,68 @@ def test_chat_ui_healthz_and_send(tmp_path: Path) -> None:
         dashboard_path = run_root / "reports" / "dashboard.html"
         assert metrics_path.exists()
         assert dashboard_path.exists()
+    finally:
+        server.stop()
+
+
+def test_chat_ui_falls_back_from_unsupported_requested_codex_model(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+
+        try:
+            out_idx = cmd.index("--output-last-message")
+            model_idx = cmd.index("--model")
+        except ValueError as exc:  # pragma: no cover
+            raise AssertionError("Codex CLI args missing required flags") from exc
+
+        out_path = Path(cmd[out_idx + 1])
+        model = cmd[model_idx + 1]
+        if model == "gpt-5.3-codex-spark":
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="",
+                stderr=(
+                    'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error",'
+                    '"message":"The \'gpt-5.3-codex-spark\' model is not supported when using Codex '
+                    'with a ChatGPT account."}}'
+                ),
+            )
+
+        out_path.write_text(
+            json.dumps(
+                {
+                    "status": "SUCCESS",
+                    "summary": "fallback reply",
+                    "artifacts": [],
+                    "metrics": {},
+                    "next_actions": [],
+                    "failure_signature": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(llm_client.subprocess, "run", fake_run)
+
+    config = ChatUIConfig(host="127.0.0.1", port=0, llm_provider="codex", workspace_dir=tmp_path)
+    try:
+        server = ChatUIServer(config)
+    except PermissionError as exc:
+        pytest.skip(f"socket operations not permitted in this environment: {exc}")
+    server.start()
+    try:
+        _wait_for_healthz(server.url)
+        payload = _post_json(
+            f"{server.url}/api/send",
+            {"message": "hello", "history": [], "model": "gpt-5.3-codex-spark"},
+        )
+        assert payload["ok"] is True
+        assert payload["status"] == "SUCCESS"
+        assert payload["reply"] == "fallback reply"
+        assert [cmd[cmd.index("--model") + 1] for cmd in calls] == ["gpt-5.3-codex-spark", "gpt-5.3-codex"]
     finally:
         server.stop()

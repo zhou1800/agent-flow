@@ -67,8 +67,12 @@ def test_entrypoint_prompt_includes_agent_worktree_rule() -> None:
     assert "temp/codex-worktrees/" in prompt
     assert "Worktree: <absolute-path>" in prompt
     assert "do not wait for extra human instructions" in prompt
+    assert "commit any selected improvement you intend to keep" in prompt
+    assert "git -c user.email=tokimon@local -c user.name=Tokimon commit -m \"<scoped summary of the selected improvement>\"" in prompt
+    assert "commit it in the nested worktree before final verification or merge" in prompt
     assert "does not replace Tokimon's outer batch winner merge" in prompt
     assert "`git worktree add -b \"$BRANCH\" \"$WT_DIR\" HEAD`" in prompt
+    assert "`git add -A`" in prompt
     assert "`git merge --ff-only <worktree-branch>`" in prompt
     assert "`git worktree remove <worktree-path>`" in prompt
 

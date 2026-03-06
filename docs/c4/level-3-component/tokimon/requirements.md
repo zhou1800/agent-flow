@@ -346,7 +346,8 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - The scripted adapter MUST NOT synthesize placeholder content; if the script is exhausted it MUST return a deterministic `FAILURE` with actionable remediation.
 - Primary adapter: Codex CLI-backed client that shells out to `codex exec` and returns structured JSON (controlled via `TOKIMON_LLM=codex` or CLI flags).
   - Codex model selection MUST NOT rely on the user's global Codex config. Tokimon MUST pass an explicit `--model` on every Codex invocation.
-  - Default Codex model for general tasks is `gpt-5.2` unless overridden (env: `TOKIMON_CODEX_MODEL`, or Chat UI request field: `model`).
+  - Default Codex model for general tasks is `gpt-5.3-codex` unless overridden (env: `TOKIMON_CODEX_MODEL`, or Chat UI request field: `model`).
+  - If Codex CLI rejects a request-selected model as unsupported for the current auth mode, Tokimon MUST retry that call once with the built-in default model `gpt-5.3-codex` before surfacing a failure.
 - Optional adapter: Claude Code CLI-backed client that shells out to `claude` and returns structured JSON (controlled via `TOKIMON_LLM=claude` or CLI flags).
 - Claude Code CLI invocation: send prompts via stdin in `--print` mode (`claude --print --input-format text --output-format json`) and optionally pass a settings file via `--settings <path>` (mirrors `~/clover/joey-playground/apps/ai-agent-cli`).
   - Config surface (env): `CLAUDE_CODE_CLI` (binary override), `TOKIMON_CLAUDE_MODEL`, `TOKIMON_CLAUDE_TIMEOUT_S`, `TOKIMON_CLAUDE_SETTINGS_PATH` or `TOKIMON_CLAUDE_SETTINGS_JSON`, `TOKIMON_CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS`, `TOKIMON_CLAUDE_ARGS`.
@@ -445,6 +446,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - Health endpoint: `GET /healthz` returns JSON indicating the server is running.
 - Chat endpoint: `POST /api/send` accepts JSON `{message: string, history?: [{role, content}], model?: string}` and returns a structured JSON reply including the step result fields (`status`, `summary`, `artifacts`, `metrics`, `next_actions`, `failure_signature`) plus optional `ui_blocks`, and a human-readable assistant message (in `reply`).
   - When `model` is provided and the active LLM provider is a CLI-backed provider (Codex/Claude), Tokimon MUST use it for that request.
+  - For Codex-backed requests, if the requested model is rejected as unsupported for the current auth mode, Tokimon MUST retry once with `gpt-5.3-codex` and still return a normal structured reply when the fallback succeeds.
 - The frontend renders `ui_blocks` using `@tambo-ai/react` (`TamboRegistryProvider` + `ComponentRenderer`) with a local registry (no Tambo cloud / no API key).
 - Chat UI persists each `/api/send` result under `<workspace_dir>/runs/chat-ui/run-<run_id>/artifacts/steps/chat-<N>/step_result.json`.
 - The chat handler uses the same tool set as the hierarchical runner (file, grep, patch, pytest, web).
@@ -574,8 +576,8 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - This rule applies inside each self-improve session workspace. It does not replace the outer Tokimon batch merge back onto the master checkout, which still follows the winner-merge contract above.
 - When the active self-improve runtime can execute git/shell commands inside the session workspace, the self-improve entry-point prompt MUST instruct the agent to isolate its own edits in a nested git worktree rooted at `temp/codex-worktrees/`.
 - The prompt MUST tell the agent to treat the default session checkout as read-only, reuse the most recent `Worktree: <absolute-path>` from the same thread when present, and report `Worktree: <absolute-path>` whenever it makes changes.
-- In self-improve mode, the agent SHOULD manage the nested worktree lifecycle without waiting for extra human instructions: create before editing, merge committed verified work back into the session checkout, then delete the nested worktree once it is safely merged and clean.
-- Allowed mutating git commands are limited to the `Create`, `Merge`, and `Delete` sequences below. Here, `<main-checkout>` means the current self-improve session workspace root.
+- In self-improve mode, the agent SHOULD manage the nested worktree lifecycle without waiting for extra human instructions: create before editing, commit any selected improvement it intends to keep, merge committed verified work back into the session checkout, then delete the nested worktree once it is safely merged and clean.
+- Allowed mutating git commands are limited to the `Create`, `Commit`, `Merge`, and `Delete` sequences below. Here, `<main-checkout>` means the current self-improve session workspace root.
 - If the runtime cannot execute git/shell commands, it MUST say so plainly instead of claiming the worktree lifecycle happened.
 
 Create:
@@ -583,6 +585,12 @@ Create:
 2) `WT_DIR="$(mktemp -d temp/codex-worktrees/wt-XXXXXX)"`
 3) `BRANCH="ai/$(basename "$WT_DIR")"`
 4) `git worktree add -b "$BRANCH" "$WT_DIR" HEAD`
+
+Commit:
+1) When an improvement is selected to keep, verify the change is complete enough to preserve.
+2) `cd <worktree-path>`
+3) `git add -A`
+4) `git -c user.email=tokimon@local -c user.name=Tokimon commit -m "<scoped summary of the selected improvement>"`
 
 Merge:
 1) Verify the work is committed and there is something to merge; otherwise warn and stop.

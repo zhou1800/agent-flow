@@ -31,3 +31,6 @@ If instructions conflict, follow the highest-precedence item and explicitly note
 - Retries MUST change something material (scope, strategy, search target, or assumptions).
 - After N=2 novel retries without progress, workers MUST stop early with `PARTIAL` and provide concrete next steps (what to try, where to look, and how to verify).
 
+## Self-Improve Commit Discipline
+- In self-improve mode, when git/shell access is available and the worker selects an improvement to keep, it MUST commit that selected improvement in the nested worktree before reporting success or attempting the session-local merge.
+- Workers MUST NOT leave the selected improvement only as staged or unstaged changes when the intent is for Tokimon to preserve it.

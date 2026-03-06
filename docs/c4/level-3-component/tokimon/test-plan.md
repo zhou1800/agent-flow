@@ -54,7 +54,8 @@ This document maps requirements to automated tests.
 - Config mutation audit: promoting a skill appends JSONL audit entries when writing skill assets (manifest, modules, prompts).
 - Doctor state integrity: `tokimon doctor` reports missing/non-writable state dirs and invalid generated-skill manifest shape deterministically.
 - Codex CLI prompt rendering: deterministic prompt envelope with stable tool ordering and explicit context sections.
-- Codex CLI model selection: default Codex model is `gpt-5.2` when `TOKIMON_CODEX_MODEL` is unset, and env overrides win (see `src/tests/test_codex_cli_settings_env.py`).
+- Codex CLI model selection: default Codex model is `gpt-5.3-codex` when `TOKIMON_CODEX_MODEL` is unset, and env overrides win (see `src/tests/test_codex_cli_settings_env.py`).
+- Codex CLI unsupported-model fallback: when Codex rejects a requested model as unsupported for the current auth mode, Tokimon retries once with `gpt-5.3-codex` and returns the fallback payload (see `src/tests/test_codex_ripgrep_guard.py`).
 - Codex CLI ripgrep guard: guard on/off, guard config contents, `RIPGREP_CONFIG_PATH` override/preservation, max-columns default and disable=0.
 - Codex CLI delegation markers: subprocess env includes `TOKIMON_DELEGATED=1`, increments `TOKIMON_DELEGATION_DEPTH`, and prompt context reflects delegation depth.
 - Claude CLI adapter: subprocess args include non-interactive flags (`--print`, `--input-format text`, `--output-format json`) and delegation markers are set in the subprocess environment (see `src/tests/test_claude_cli_client.py`).
@@ -83,6 +84,7 @@ This document maps requirements to automated tests.
   - Assert `GET /healthz` returns `{"ok": true}` (or equivalent).
   - Assert `POST /api/send` with a simple message returns a structured JSON reply (including any `ui_blocks`).
   - Assert `POST /api/send` accepts an optional `model` field (when using Codex/Claude providers it selects the request model).
+  - Assert a Codex-backed `POST /api/send` still succeeds when the requested model is rejected as unsupported and the built-in fallback model succeeds.
   - Assert a `step_result.json` run artifact exists under the configured `workspace_dir`.
   - Assert run-level observability artifacts exist under the same run root: `reports/metrics.json` and `reports/dashboard.html`.
   - Shut the server down cleanly.
@@ -103,7 +105,7 @@ This document maps requirements to automated tests.
 - Self-improvement batch:
   - Creates multiple isolated session workspaces from a master root.
   - Uses `git worktree` (detached HEAD) for all session workspaces and aborts with an actionable error when the master is not a clean git checkout.
-  - Self-improve entry-point prompts include the session-local AI Agent Worktree Rule (`temp/codex-worktrees/`, `Worktree:` reporting, and the `Create` / `Merge` / `Delete` command sequences) and keep it distinct from Tokimon's outer winner merge contract.
+  - Self-improve entry-point prompts include the session-local AI Agent Worktree Rule (`temp/codex-worktrees/`, `Worktree:` reporting, a required commit for any selected improvement, and the `Create` / `Commit` / `Merge` / `Delete` command sequences) and keep it distinct from Tokimon's outer winner merge contract.
   - Evaluates each session and selects a winner deterministically.
   - Merges the winner back to master and re-runs evaluation.
   - Winner merge uses `git merge --squash` and commits only on passing evaluation.

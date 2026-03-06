@@ -24,6 +24,9 @@ const MODEL_PRESETS = [
   "gpt-5.1-codex-mini",
 ] as const;
 
+const DEFAULT_MODEL = "gpt-5.3-codex";
+const LEGACY_DEFAULT_MODEL = "gpt-5.2";
+
 export function App() {
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<ChatMessage[]>([]);
@@ -31,9 +34,14 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [model, setModel] = useState(() => {
     try {
-      return localStorage.getItem("tokimon.model") ?? "gpt-5.2";
+      const stored = localStorage.getItem("tokimon.model");
+      const normalized = (stored ?? "").trim();
+      if (!normalized || normalized === LEGACY_DEFAULT_MODEL) {
+        return DEFAULT_MODEL;
+      }
+      return normalized;
     } catch {
-      return "gpt-5.2";
+      return DEFAULT_MODEL;
     }
   });
   const [lastResponse, setLastResponse] = useState<SendResponse | null>(null);

@@ -7,11 +7,11 @@ import os
 import shlex
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-_DEFAULT_CODEX_MODEL = "gpt-5.2"
+_DEFAULT_CODEX_MODEL = "gpt-5.3-codex"
 
 
 class LLMClient(Protocol):
@@ -307,24 +307,13 @@ class CodexCLIClient:
             tmp_kwargs["dir"] = str(tmp_root)
 
         with tempfile.TemporaryDirectory(**tmp_kwargs) as tmpdir:
-            tmp = Path(tmpdir)
-            last_message_path = tmp / "last_message.txt"
-
-            cmd = _build_codex_exec_command(
-                self.settings,
-                workspace_dir=self.workspace_dir,
-                last_message_path=last_message_path,
-            )
             try:
-                completed = subprocess.run(
-                    cmd,
-                    input=prompt,
-                    text=True,
-                    capture_output=True,
+                completed, raw_last = _run_codex_exec(
+                    self.settings,
+                    workspace_dir=self.workspace_dir,
+                    prompt=prompt,
                     env=env,
-                    cwd=str(self.workspace_dir),
-                    timeout=self.settings.timeout_s,
-                    check=False,
+                    tmpdir=Path(tmpdir),
                 )
             except FileNotFoundError as exc:
                 return _llm_error(
@@ -344,24 +333,65 @@ class CodexCLIClient:
                     details=str(exc),
                 )
 
-            raw_last = ""
-            if last_message_path.exists():
-                raw_last = last_message_path.read_text(
-                    encoding="utf-8",
-                    errors="replace",
-                ).strip()
-
             if completed.returncode != 0 and not raw_last:
                 details = _truncate(completed.stderr or completed.stdout, 2000)
-                reason = _first_nonempty_line(details)
-                summary = f"codex cli exited {completed.returncode}"
-                if reason:
-                    summary = f"{summary}: {reason}"
-                return _llm_error(
-                    summary,
-                    failure_signature="llm-codex-nonzero-exit",
-                    details=details,
-                )
+                if _should_retry_codex_with_default(self.settings.model, details):
+                    fallback_settings = replace(self.settings, model=_DEFAULT_CODEX_MODEL)
+                    try:
+                        completed, raw_last = _run_codex_exec(
+                            fallback_settings,
+                            workspace_dir=self.workspace_dir,
+                            prompt=prompt,
+                            env=env,
+                            tmpdir=Path(tmpdir),
+                        )
+                    except FileNotFoundError as exc:
+                        return _llm_error(
+                            "codex cli not found",
+                            failure_signature="llm-codex-cli-missing",
+                            details=str(exc),
+                        )
+                    except subprocess.TimeoutExpired:
+                        return _llm_error(
+                            f"codex cli timed out after {fallback_settings.timeout_s}s",
+                            failure_signature="llm-codex-timeout",
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        return _llm_error(
+                            "codex cli error",
+                            failure_signature="llm-codex-exception",
+                            details=str(exc),
+                        )
+                    if completed.returncode != 0 and not raw_last:
+                        fallback_details = _truncate(completed.stderr or completed.stdout, 2000)
+                        combined = _truncate(
+                            (
+                                "requested-model failure:\n"
+                                f"{details}\n\n"
+                                "fallback-model failure:\n"
+                                f"{fallback_details}"
+                            ),
+                            2000,
+                        )
+                        reason = _first_nonempty_line(fallback_details) or _first_nonempty_line(details)
+                        summary = f"codex cli exited {completed.returncode}"
+                        if reason:
+                            summary = f"{summary}: {reason}"
+                        return _llm_error(
+                            summary,
+                            failure_signature="llm-codex-nonzero-exit",
+                            details=combined,
+                        )
+                else:
+                    reason = _first_nonempty_line(details)
+                    summary = f"codex cli exited {completed.returncode}"
+                    if reason:
+                        summary = f"{summary}: {reason}"
+                    return _llm_error(
+                        summary,
+                        failure_signature="llm-codex-nonzero-exit",
+                        details=details,
+                    )
 
             candidate = raw_last or completed.stdout.strip()
             json_text = _extract_json_text(candidate)
@@ -641,6 +671,43 @@ def _extract_json_payload(candidate: Any) -> str:
     return json.dumps(candidate)
 
 
+def _run_codex_exec(
+    settings: CodexCLISettings,
+    *,
+    workspace_dir: Path,
+    prompt: str,
+    env: dict[str, str],
+    tmpdir: Path,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    last_message_path = tmpdir / "last_message.txt"
+    try:
+        last_message_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    cmd = _build_codex_exec_command(
+        settings,
+        workspace_dir=workspace_dir,
+        last_message_path=last_message_path,
+    )
+    completed: subprocess.CompletedProcess[str] = subprocess.run(
+        cmd,
+        input=prompt,
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(workspace_dir),
+        timeout=settings.timeout_s,
+        check=False,
+    )
+    raw_last = ""
+    if last_message_path.exists():
+        raw_last = last_message_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).strip()
+    return completed, raw_last
+
+
 def _llm_error(
     summary: str,
     *,
@@ -658,6 +725,24 @@ def _llm_error(
     if details:
         payload["metrics"]["details"] = details
     return payload
+
+
+def _should_retry_codex_with_default(model: str | None, details: str) -> bool:
+    requested_model = (model or "").strip()
+    if not requested_model or requested_model == _DEFAULT_CODEX_MODEL:
+        return False
+    normalized = (details or "").lower()
+    if "model is not supported" not in normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "chatgpt account",
+            "api key",
+            "current auth",
+            "current provider",
+        )
+    )
 
 
 def _truncate(text: str | None, limit: int) -> str:

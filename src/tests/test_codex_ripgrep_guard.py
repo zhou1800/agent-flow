@@ -170,3 +170,82 @@ def test_max_columns_disable_omits_flags(monkeypatch, tmp_path):
     content = guard_path.read_text(encoding="utf-8")
     assert "--max-columns=" not in content
     assert "--max-columns-preview" not in content
+
+
+def test_codex_client_retries_unsupported_requested_model_with_default(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+
+        try:
+            idx = cmd.index("--output-last-message")
+            model_idx = cmd.index("--model")
+        except ValueError as exc:  # pragma: no cover
+            raise AssertionError("Codex CLI args missing required flags") from exc
+
+        out_path = Path(cmd[idx + 1])
+        model = cmd[model_idx + 1]
+        if model == "gpt-5.3-codex-spark":
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="",
+                stderr=(
+                    'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error",'
+                    '"message":"The \'gpt-5.3-codex-spark\' model is not supported when using Codex '
+                    'with a ChatGPT account."}}'
+                ),
+            )
+
+        out_path.write_text(
+            json.dumps(
+                {
+                    "status": "SUCCESS",
+                    "summary": "fallback worked",
+                    "artifacts": [],
+                    "metrics": {},
+                    "next_actions": [],
+                    "failure_signature": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(client.subprocess, "run", fake_run)
+
+    cli = client.CodexCLIClient(
+        workspace_dir=tmp_path,
+        settings=client.CodexCLISettings(cli_command="codex", model="gpt-5.3-codex-spark"),
+    )
+    payload = cli.send(messages=[{"role": "user", "content": "hi"}])
+
+    assert payload["status"] == "SUCCESS"
+    assert payload["summary"] == "fallback worked"
+    assert [cmd[cmd.index("--model") + 1] for cmd in calls] == ["gpt-5.3-codex-spark", "gpt-5.3-codex"]
+
+
+def test_codex_client_does_not_retry_default_model_on_nonzero_exit(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout="",
+            stderr="ERROR: upstream unavailable",
+        )
+
+    monkeypatch.setattr(client.subprocess, "run", fake_run)
+
+    cli = client.CodexCLIClient(
+        workspace_dir=tmp_path,
+        settings=client.CodexCLISettings(cli_command="codex", model="gpt-5.3-codex"),
+    )
+    payload = cli.send(messages=[{"role": "user", "content": "hi"}])
+
+    assert payload["status"] == "FAILURE"
+    assert payload["failure_signature"] == "llm-codex-nonzero-exit"
+    assert len(calls) == 1
