@@ -104,6 +104,23 @@ class CodexCLISettings:
         )
 
 
+def interactive_codex_settings_from_env(*, model: str | None = None) -> CodexCLISettings:
+    """Return Codex settings for interactive servers.
+
+    Chat-facing servers should be writable by default, while still respecting
+    any explicit operator overrides from the environment.
+    """
+
+    settings = CodexCLISettings.from_env()
+    if "TOKIMON_CODEX_SANDBOX" not in os.environ:
+        settings = replace(settings, sandbox="workspace-write")
+    if "TOKIMON_CODEX_APPROVAL" not in os.environ:
+        settings = replace(settings, ask_for_approval="never")
+    if model:
+        settings = replace(settings, model=model)
+    return settings
+
+
 @dataclass(frozen=True)
 class ClaudeCLISettings:
     """Configuration for `ClaudeCLIClient` (Claude Code CLI adapter)."""

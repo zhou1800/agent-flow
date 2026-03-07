@@ -20,8 +20,8 @@ from agents.worker import Worker
 from llm.client import ClaudeCLIClient
 from llm.client import ClaudeCLISettings
 from llm.client import CodexCLIClient
-from llm.client import CodexCLISettings
 from llm.client import build_llm_client
+from llm.client import interactive_codex_settings_from_env
 from observability.reports import build_run_metrics_payload
 from observability.reports import normalize_step_metrics
 from observability.reports import write_metrics_and_dashboard
@@ -133,7 +133,13 @@ class _ChatHTTPServer(ThreadingHTTPServer):
         self.config = config
         self.workspace_dir = config.workspace_dir.resolve()
         self.llm_provider = (config.llm_provider or "").strip().lower()
-        self.llm_client = build_llm_client(self.llm_provider, workspace_dir=self.workspace_dir)
+        if self.llm_provider in {"codex", "codex-cli"}:
+            self.llm_client = CodexCLIClient(
+                self.workspace_dir,
+                settings=interactive_codex_settings_from_env(),
+            )
+        else:
+            self.llm_client = build_llm_client(self.llm_provider, workspace_dir=self.workspace_dir)
         self.tools = {
             "file": FileTool(self.workspace_dir),
             "grep": GrepTool(self.workspace_dir),
@@ -149,8 +155,10 @@ class _ChatHTTPServer(ThreadingHTTPServer):
     def _llm_client_for_request(self, model: str | None) -> Any:
         model = (model or "").strip() or None
         if model and self.llm_provider in {"codex", "codex-cli"}:
-            settings = replace(CodexCLISettings.from_env(), model=model)
-            return CodexCLIClient(self.workspace_dir, settings=settings)
+            return CodexCLIClient(
+                self.workspace_dir,
+                settings=interactive_codex_settings_from_env(model=model),
+            )
         if model and self.llm_provider in {"claude", "claude-cli"}:
             settings = replace(ClaudeCLISettings.from_env(), model=model)
             return ClaudeCLIClient(self.workspace_dir, settings=settings)

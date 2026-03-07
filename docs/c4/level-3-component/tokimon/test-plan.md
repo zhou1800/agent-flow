@@ -56,6 +56,7 @@ This document maps requirements to automated tests.
 - Doctor state integrity: `tokimon doctor` reports missing/non-writable state dirs and invalid generated-skill manifest shape deterministically.
 - Codex CLI prompt rendering: deterministic prompt envelope with stable tool ordering and explicit context sections.
 - Codex CLI model selection: default Codex model is `gpt-5.4` when `TOKIMON_CODEX_MODEL` is unset, and env overrides win (see `src/tests/test_codex_cli_settings_env.py`).
+- Interactive Codex defaults: `tokimon chat-ui` and `tokimon gateway` use writable Codex defaults (`sandbox=workspace-write`, `ask_for_approval=never`) when `TOKIMON_CODEX_SANDBOX` / `TOKIMON_CODEX_APPROVAL` are unset, and explicit env overrides still win.
 - Codex CLI unsupported-model fallback: when Codex rejects a requested model as unsupported for the current auth mode, Tokimon retries once with `gpt-5.4` and returns the fallback payload (see `src/tests/test_codex_ripgrep_guard.py`).
 - Codex CLI ripgrep guard: guard on/off, guard config contents, `RIPGREP_CONFIG_PATH` override/preservation, max-columns default and disable=0.
 - Codex CLI delegation markers: subprocess env includes `TOKIMON_DELEGATED=1`, increments `TOKIMON_DELEGATION_DEPTH`, and prompt context reflects delegation depth.

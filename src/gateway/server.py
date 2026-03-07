@@ -24,8 +24,8 @@ from agents.worker import Worker
 from llm.client import ClaudeCLIClient
 from llm.client import ClaudeCLISettings
 from llm.client import CodexCLIClient
-from llm.client import CodexCLISettings
 from llm.client import build_llm_client
+from llm.client import interactive_codex_settings_from_env
 from policy.dangerous_tools import tool_catalog
 from tools.file_tool import FileTool
 from tools.grep_tool import GrepTool
@@ -66,7 +66,13 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
         token = config.auth_token if config.auth_token is not None else os.environ.get("TOKIMON_GATEWAY_AUTH_TOKEN")
         token = (token or "").strip() or None
         self.auth_token = token
-        self.llm_client = build_llm_client(self.llm_provider, workspace_dir=self.workspace_dir)
+        if self.llm_provider in {"codex", "codex-cli"}:
+            self.llm_client = CodexCLIClient(
+                self.workspace_dir,
+                settings=interactive_codex_settings_from_env(),
+            )
+        else:
+            self.llm_client = build_llm_client(self.llm_provider, workspace_dir=self.workspace_dir)
         self.tools = {
             "file": FileTool(self.workspace_dir),
             "grep": GrepTool(self.workspace_dir),
@@ -144,8 +150,10 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
     def _llm_client_for_request(self, model: str | None) -> Any:
         model = (model or "").strip() or None
         if model and self.llm_provider in {"codex", "codex-cli"}:
-            settings = replace(CodexCLISettings.from_env(), model=model)
-            return CodexCLIClient(self.workspace_dir, settings=settings)
+            return CodexCLIClient(
+                self.workspace_dir,
+                settings=interactive_codex_settings_from_env(model=model),
+            )
         if model and self.llm_provider in {"claude", "claude-cli"}:
             settings = replace(ClaudeCLISettings.from_env(), model=model)
             return ClaudeCLIClient(self.workspace_dir, settings=settings)

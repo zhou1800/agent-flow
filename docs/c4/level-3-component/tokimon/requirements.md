@@ -452,6 +452,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - Chat UI persists each `/api/send` result under `<workspace_dir>/runs/chat-ui/run-<run_id>/artifacts/steps/chat-<N>/step_result.json`.
 - The chat handler uses the same tool set as the hierarchical runner (file, grep, patch, pytest, web).
 - Default LLM provider for `chat-ui` and `gateway` is `codex`; `--llm claude` (or `TOKIMON_LLM=claude`) selects the Claude CLI-backed client instead.
+- When `chat-ui` or `gateway` runs with the Codex provider, the interactive Codex defaults MUST be writable: if `TOKIMON_CODEX_SANDBOX` is unset, use `workspace-write`; if `TOKIMON_CODEX_APPROVAL` is unset, use `never`. Explicit environment values still override these defaults.
 
 ### Gateway Server (OpenClaw-Inspired, Phase 1/2/3)
 - `tokimon gateway` starts a local server that supports:

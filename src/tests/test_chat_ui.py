@@ -174,6 +174,30 @@ def test_chat_ui_falls_back_from_unsupported_requested_codex_model(monkeypatch, 
         server.stop()
 
 
+def test_chat_ui_uses_writable_codex_defaults(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("TOKIMON_CODEX_SANDBOX", raising=False)
+    monkeypatch.delenv("TOKIMON_CODEX_APPROVAL", raising=False)
+
+    config = ChatUIConfig(host="127.0.0.1", port=0, llm_provider="codex", workspace_dir=tmp_path)
+    try:
+        server = ChatUIServer(config)
+    except PermissionError as exc:
+        pytest.skip(f"socket operations not permitted in this environment: {exc}")
+    server.start()
+    try:
+        assert isinstance(server._server.llm_client, llm_client.CodexCLIClient)
+        assert server._server.llm_client.settings.sandbox == "workspace-write"
+        assert server._server.llm_client.settings.ask_for_approval == "never"
+
+        request_client = server._server._llm_client_for_request("gpt-5.4")
+        assert isinstance(request_client, llm_client.CodexCLIClient)
+        assert request_client.settings.model == "gpt-5.4"
+        assert request_client.settings.sandbox == "workspace-write"
+        assert request_client.settings.ask_for_approval == "never"
+    finally:
+        server.stop()
+
+
 def test_chat_ui_app_wires_keyboard_first_composer_behavior() -> None:
     content = Path("ui/src/App.tsx").read_text(encoding="utf-8")
 
