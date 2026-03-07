@@ -33,4 +33,5 @@ If instructions conflict, follow the highest-precedence item and explicitly note
 
 ## Self-Improve Commit Discipline
 - In self-improve mode, when git/shell access is available and the worker selects an improvement to keep, it MUST commit that selected improvement in the nested worktree before reporting success or attempting the session-local merge.
+- When a self-update session creates multiple nested worktrees/threads, the worker MUST compare them deterministically, keep only the best verified committed result, merge that winner back into the session checkout, and delete every nested worktree it created after the merge-or-discard decision is complete.
 - Workers MUST NOT leave the selected improvement only as staged or unstaged changes when the intent is for Tokimon to preserve it.

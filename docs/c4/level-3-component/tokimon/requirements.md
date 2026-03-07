@@ -508,28 +508,29 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
 - When invoked with a self-improvement goal, the system can accept optional “inputs”:
   - URL (http/https), local file path, or inline text (or none).
 - If `--input` is not provided, the system may auto-detect URL(s) embedded in the `--goal` text and fetch at least the first URL as the session input payload (bounded by byte/time limits and the WebTool network policy).
-- The system runs a batch of N independent improvement sessions in parallel.
+- When the self-improvement goal is to update Tokimon itself, the default execution strategy MUST be a batch of N independent improvement sessions in parallel so multiple worktree-backed candidates can be explored at once.
 - Self-improve CLI LLM default: `--llm` defaults to `$TOKIMON_LLM` when set; otherwise it defaults to `mixed`.
 - Self-improve provider timeout policy:
   - When `TOKIMON_CODEX_TIMEOUT_S` / `TOKIMON_CLAUDE_TIMEOUT_S` are unset, `tokimon self-improve` MUST inherit the provider client's default timeout behavior.
   - `tokimon self-improve` MUST NOT silently shorten provider timeouts with a self-improve-specific override.
 - Mixed-provider mode: when `--llm mixed`, enforce a deterministic `claude:codex=1:4` session mix by assigning Claude to session indices 1, 6, 11, ... (i.e., `(index - 1) % 5 == 0`) and Codex to the other sessions. `--sessions` MUST be a multiple of 5 (default: 5).
-- Before launching each batch, the system runs an evaluation on the current master workspace (pytest by default) and passes a compact summary (pass/fail counts + failing test ids) into every session as context.
+- Before launching each batch, the system runs an evaluation on the current canonical `main` checkout (the master workspace for the run) and passes a compact summary (pass/fail counts + failing test ids) into every session as context.
 - Each session:
-  - Materializes the master workspace into an isolated session workspace using `git worktree` (detached HEAD) so sessions can run in parallel without colliding on files.
-  - Self-improve requires the master workspace to be a clean git checkout (no local changes) so worktrees and merges are deterministic; otherwise it aborts with an actionable error.
+  - Materializes the canonical `main` checkout into an isolated session workspace using `git worktree` (detached HEAD) so sessions can run in parallel without colliding on files.
+  - Self-improve requires the canonical `main` checkout to be a clean git checkout (no local changes) so worktrees and merges are deterministic; otherwise it aborts with an actionable error.
   - Runs the hierarchical agent system within that workspace to attempt improvements.
   - Runs the configured evaluation command after each workflow step when `pytest_args` are provided, so retry/progress gating has objective signals.
   - Evaluates the result (pytest by default; optionally benchmark suite).
-  - Produces a session report, metrics, and a diff/changed-file set.
+  - Produces a session report, metrics, and a diff/changed-file set versus `main`.
   - After each batch:
-    - A comparer selects a winner by deterministic criteria (tests passing is primary).
-    - A merger applies the winner back onto master (restricted to configured paths; defaults should include `src/` and `docs/`) using a conflict-aware git integration:
-      - Create a temporary commit capturing the winner changes.
-      - Apply via `git merge --squash` onto master.
-      - Re-evaluate master; on success, commit the squashed changes.
+    - A comparer selects the best verified winner by deterministic criteria (tests passing is primary).
+    - The selected winner MUST exist as a commit before merge, either because the session already committed it or because the merger materializes a temporary candidate commit from the verified diff.
+    - A merger applies the committed winner back onto the canonical `main` checkout (restricted to configured paths; defaults should include `src/` and `docs/`) using a conflict-aware git integration:
+      - Apply via `git merge --squash` onto `main`.
+      - Re-evaluate `main`; on success, commit the squashed changes.
       - Use an OS-level lock so multiple self-improve runs perform safe queued merges into the same checkout.
-      - On merge conflicts, automatically resolve (prefer winner changes) and continue; on failing evaluation, abort and leave master unchanged.
+      - On merge conflicts, automatically resolve (prefer winner changes) and continue; on failing evaluation, abort and leave `main` unchanged.
+    - Once required reports and session artifacts are persisted, the system MUST delete every session worktree it created for the batch; cleanup failures MUST be reported explicitly.
 - The system runs up to the configured number of batches, even when merge is disabled (report-only mode) or when a batch fails to produce a mergeable winner.
 
 #### Parallel Exploration Protocol (Diverse Paths, Deterministic Selection)
@@ -561,7 +562,7 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - The raw `goal` string.
   - A session strategy hint (diverse across sessions).
   - The optional input payload content (URL/file/text) when provided.
-  - The master evaluation summary for the batch (pytest counts + failing test ids).
+  - The `main` evaluation summary for the batch (pytest counts + failing test ids).
 - Workers are expected to:
   - Clarify assumptions inline when the goal is underspecified (ask questions only when strictly necessary).
   - Produce a structured plan (workflow steps) with verifiable subgoals.
@@ -578,10 +579,11 @@ Tokimon is a production-grade manager/worker (hierarchical) agent system that or
   - If verification fails, restart from prompt generation (retry loop) until success or attempt budget is exhausted.
 
 #### Nested Agent Worktree Rule (Self-Improve, Session-Local)
-- This rule applies inside each self-improve session workspace. It does not replace the outer Tokimon batch merge back onto the master checkout, which still follows the winner-merge contract above.
+- This rule applies inside each self-improve session workspace. It does not replace the outer Tokimon batch merge back onto the canonical `main` checkout, which still follows the winner-merge contract above.
 - When the active self-improve runtime can execute git/shell commands inside the session workspace, the self-improve entry-point prompt MUST instruct the agent to isolate its own edits in a nested git worktree rooted at `temp/codex-worktrees/`.
 - The prompt MUST tell the agent to treat the default session checkout as read-only, reuse the most recent `Worktree: <absolute-path>` from the same thread when present, and report `Worktree: <absolute-path>` whenever it makes changes.
-- In self-improve mode, the agent SHOULD manage the nested worktree lifecycle without waiting for extra human instructions: create before editing, commit any selected improvement it intends to keep, merge committed verified work back into the session checkout, then delete the nested worktree once it is safely merged and clean.
+- When a session creates multiple nested agent threads, each thread MUST use its own nested worktree so candidate solutions stay isolated.
+- In self-improve mode, the agent MUST manage the nested worktree lifecycle without waiting for extra human instructions: create before editing, compare multiple candidates deterministically when more than one nested worktree exists, commit the selected improvement it intends to keep, merge committed verified work back into the session checkout, then delete every nested worktree it created once winners and losers are safely merged or discarded.
 - Allowed mutating git commands are limited to the `Create`, `Commit`, `Merge`, and `Delete` sequences below. Here, `<main-checkout>` means the current self-improve session workspace root.
 - If the runtime cannot execute git/shell commands, it MUST say so plainly instead of claiming the worktree lifecycle happened.
 

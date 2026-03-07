@@ -106,13 +106,14 @@ This document maps requirements to automated tests.
   - Assert an unreachable port returns `{"ok": false}` and a non-zero exit code (see `src/tests/test_health.py`).
 
 - Self-improvement batch:
-  - Creates multiple isolated session workspaces from a master root.
-  - Uses `git worktree` (detached HEAD) for all session workspaces and aborts with an actionable error when the master is not a clean git checkout.
-  - Self-improve entry-point prompts include the session-local AI Agent Worktree Rule (`temp/codex-worktrees/`, `Worktree:` reporting, a required commit for any selected improvement, and the `Create` / `Commit` / `Merge` / `Delete` command sequences) and keep it distinct from Tokimon's outer winner merge contract.
-  - Evaluates each session and selects a winner deterministically.
-  - Merges the winner back to master and re-runs evaluation.
+  - Creates multiple isolated session workspaces from the canonical `main` checkout for self-update requests.
+  - Uses `git worktree` (detached HEAD) for all session workspaces and aborts with an actionable error when `main` is not a clean git checkout.
+  - Self-improve entry-point prompts include the session-local AI Agent Worktree Rule (`temp/codex-worktrees/`, `Worktree:` reporting, per-thread nested worktrees, a required commit for any selected improvement, deterministic candidate selection, and the `Create` / `Commit` / `Merge` / `Delete` command sequences) and keep it distinct from Tokimon's outer winner merge contract.
+  - Evaluates each session and selects the best verified winner deterministically.
+  - Preserves the selected winner as a commit before merge, merges that winner back to `main`, and re-runs evaluation.
   - Winner merge uses `git merge --squash` and commits only on passing evaluation.
   - Merges are safe queued merges via an OS-level lock; merge conflicts are auto-resolved (prefer winner changes).
+  - Deletes every outer session worktree created for the batch after required reports/artifacts are persisted, and reports cleanup failures explicitly.
   - Runs all configured batches even when:
     - merge is disabled (`--no-merge` / report-only mode), or
     - a batch fails to produce a mergeable winner (evaluation fails).

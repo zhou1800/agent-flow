@@ -47,7 +47,7 @@ This section consolidates the system architecture plan for Tokimon.
 - Model Integration: LLMClient abstraction with Codex CLI adapter (default), optional Claude Code CLI adapter, and a deterministic scripted adapter for tests/replay.
 - Benchmark Harness: supports benchmark evaluation by running tasks when invoked, collects metrics, and produces reports.
 - Logging & Trace: structured logging, per-worker logs, consolidated trace.jsonl.
-- Self-Improve Orchestrator: runs parallel “sessions” in isolated workspaces, evaluates each session, and merges the best result back to the master workspace with a report.
+- Self-Improve Orchestrator: runs parallel self-update sessions in isolated git worktrees, evaluates each session, merges the best committed result back to the canonical `main` checkout, deletes the worktrees it created, and emits a report.
 
 ### Data Flow (High Level)
 ```mermaid
@@ -106,7 +106,7 @@ tokimon/ (repo)
         self_improve.md
         sessions/
           session-<n>/
-            workspace/        (clone of master used by that session)
+            workspace/        (temporary git worktree for that session; deleted after batch cleanup)
             session.json      (plan, metrics, evaluation)
   memory/
     lessons/
@@ -187,24 +187,25 @@ Transitions:
 
 ### Self-Improvement (Batch Sessions)
 - A self-improvement “run” executes one or more **batches**.
-- Each batch spawns N **sessions** in parallel (threads/processes), each with an isolated workspace clone of master.
-- Session workspaces are created via `git worktree` (detached HEAD) so sessions can run in parallel without colliding on files.
-- Self-improve requires the master workspace to be a clean git checkout (no local changes); otherwise it aborts with an actionable error.
+- For Tokimon self-update requests, each batch defaults to N **sessions** in parallel (threads/processes) so multiple candidates can be explored at once.
+- Session workspaces are created via `git worktree` (detached HEAD) from the canonical `main` checkout so sessions can run in parallel without colliding on files.
+- Self-improve requires the canonical `main` checkout to be a clean git checkout (no local changes); otherwise it aborts with an actionable error.
 - For safety, cloning and merging may be restricted to a configured set of paths (defaults should include `src/` and `docs/`).
 - Session workspaces should include the repo entrypoint `AGENTS.md` so agents can follow the documented start sequence.
-- Before launching each batch, the orchestrator evaluates the current master (pytest by default) and provides the results summary to all sessions as context.
+- Before launching each batch, the orchestrator evaluates the current `main` checkout (pytest by default) and provides the results summary to all sessions as context.
 - Each session:
   - Receives the self-improvement goal plus optional input sources (URL/file/text).
   - Runs the hierarchical runner inside its workspace.
   - Uses the same evaluation command as a per-step check when available, so retries are progress-gated by objective signals (e.g., fewer failing tests).
   - Evaluates via automated checks (pytest by default; optionally the benchmark suite).
-  - Produces a session report and an artifact diff versus master.
+  - Produces a session report and an artifact diff versus `main`.
 - After the batch:
-  - A comparer selects the best session by a deterministic score (tests pass first, then secondary metrics).
-  - The merger applies the winner back onto master (restricted to configured paths) using a conflict-aware git integration:
-    - Create a temporary commit for the winner changes.
-    - Apply via `git merge --squash` onto master, then re-run evaluation.
-    - On success, commit the squashed changes to keep master clean for subsequent batches.
+  - A comparer selects the best verified session by a deterministic score (tests pass first, then secondary metrics).
+  - The selected winner is preserved as a commit before merge, either from the session itself or from a temporary candidate commit created from the verified diff.
+  - The merger applies the winner back onto the canonical `main` checkout (restricted to configured paths) using a conflict-aware git integration:
+    - Apply via `git merge --squash` onto `main`, then re-run evaluation.
+    - On success, commit the squashed changes to keep `main` clean for subsequent batches.
     - Use an OS-level lock so multiple self-improve runs perform safe queued merges into the same checkout.
-    - On merge conflicts, automatically resolve (prefer winner changes) and continue; on failing evaluation, abort and leave master unchanged (winner workspace remains available for manual review).
+    - On merge conflicts, automatically resolve (prefer winner changes) and continue; on failing evaluation, abort and leave `main` unchanged.
+  - After required reports/artifacts are persisted, every session worktree created for the batch is deleted; cleanup failures are reported explicitly instead of leaving stray worktrees behind.
   - A batch report is persisted with links to session artifacts and the merged changes.
