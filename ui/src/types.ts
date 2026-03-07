@@ -5,6 +5,14 @@ export type ChatMessage = {
   content: string;
 };
 
+export type ConversationLogEntry = {
+  role: ChatRole;
+  content: string;
+  meta?: string;
+  error?: boolean;
+  step_id?: string;
+};
+
 export type UIBlockText = {
   type: "text";
   title?: string;
@@ -46,8 +54,26 @@ export type SendResponse = {
   next_actions?: string[];
   failure_signature?: unknown;
   ui_blocks?: UIBlock[];
+  thread_id?: string;
   run_id?: string;
   step_id?: string;
   step_result?: StepResult;
   error?: string;
+};
+
+export type ChatConversationSummary = {
+  thread_id: string;
+  run_id: string;
+  title: string;
+  preview: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  model?: string;
+};
+
+export type ChatConversation = ChatConversationSummary & {
+  messages: ConversationLogEntry[];
+  last_step_id?: string;
+  last_step_result?: StepResult | null;
 };
